@@ -5,7 +5,7 @@
 <h1 align="center">DEXTRO DASH 2000</h1>
 
 <p align="center">
-  A physiology-powered arcade platformer starring DEX.
+  A type 1 diabetes arcade platformer where reaching the finish is only half the challenge: you must also control DEX's blood glucose.
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 ## The game
 
-DEXTRO DASH 2000 is a standalone browser arcade prototype inspired by the energy, colour and immediacy of early-1990s home-computer platform games. DEX runs, jumps and eats food monsters while a real-time physiology engine tracks true blood glucose, carbohydrate on board and insulin on board.
+DEXTRO DASH 2000 is a standalone type 1 diabetes browser game inspired by the energy, colour and immediacy of early-1990s home-computer platform games. Completing each platform stage is only one part of the challenge: the player must also control DEX's blood glucose throughout the level. A real-time physiology engine tracks true blood glucose, carbohydrate on board and insulin on board while DEX runs, jumps and eats food monsters.
 
 Food is part of the level design. Running into a food monster means eating it, with its carbohydrate, protein and fat entering the simulation. Stomping it removes the threat and creates a super-jump. Insulin can lower blood glucose, candy can raise it, and staying in range improves the level bonus.
 

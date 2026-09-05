@@ -166,7 +166,7 @@
     // alfakanal følger den tegnede junglesilhuet; der bruges ingen efterfølgende
     // canvasmaske, farveflade eller global gennemsigtighed.
     const middleGroundImage = new Image();
-    middleGroundImage.src = 'assets/parallax-mid-continuous-v2.png';
+    middleGroundImage.src = 'assets/parallax-mid-continuous-v2.png?v=0.1.3';
 
     // Store kildebilleder i høj opløsning, og skalér dem glat ned til spillets
     // lille canvas. Derved bevarer insulinpen og bolsje hver sin klare silhuet.
