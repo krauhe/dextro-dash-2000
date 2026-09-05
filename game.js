@@ -162,14 +162,11 @@
     const backgroundImage = new Image();
     backgroundImage.src = 'assets/retro-landscape.png';
 
-    // Parallaxdetaljerne er separate PNG-lag med ægte alfakanal. Kun bjerge,
-    // træer og planter er synlige; resten af hvert billede er transparent.
-    const parallaxImages = {
-        far: new Image(),
-        middle: new Image(),
-    };
-    parallaxImages.far.src = 'assets/parallax-far.png';
-    parallaxImages.middle.src = 'assets/parallax-mid.png';
+    // Ét færdigt, sammenhængende PNG-lag leverer hele mellemlandskabet. Dets
+    // alfakanal følger den tegnede junglesilhuet; der bruges ingen efterfølgende
+    // canvasmaske, farveflade eller global gennemsigtighed.
+    const middleGroundImage = new Image();
+    middleGroundImage.src = 'assets/parallax-mid-continuous-v2.png';
 
     // Store kildebilleder i høj opløsning, og skalér dem glat ned til spillets
     // lille canvas. Derved bevarer insulinpen og bolsje hver sin klare silhuet.
@@ -252,6 +249,9 @@
     let bgSamples = [];
     let message = '';
     let messageTime = 0;
+    let messageDuration = 0;
+    let messageAnchorX = 0;
+    let messageAnchorY = 0;
     let deathTime = 0;
     let deathReason = '';
     let items = [];
@@ -375,6 +375,9 @@
         bgSamples = [];
         message = '';
         messageTime = 0;
+        messageDuration = 0;
+        messageAnchorX = 0;
+        messageAnchorY = 0;
         particles = [];
         cheeseProjectiles = [];
         hudPickupFlights = [];
@@ -556,9 +559,7 @@
         showOverlay(
             'DEXTRO DASH 2000',
             'STARRING DEX',
-            attractAudioUnlocked
-                ? 'PRESS AN ARROW KEY'
-                : 'CLICK TO ENABLE SOUND\nARROWS: PLAY',
+            'PRESS A BUTTON TO PLAY',
             'title',
         );
         if (attractAudioUnlocked) audio.attractTitle();
@@ -605,7 +606,7 @@
                 ? audio.context.state
                 : 'unavailable';
             audio.attractTitle();
-            if (gameState === 'title') overlayPrompt.textContent = 'ARROWS: PLAY';
+            if (gameState === 'title') overlayPrompt.textContent = 'PRESS A BUTTON TO PLAY';
         } catch (error) {
             // Enkelte browserpolitikker kan fortsat afvise lydstart. Tilstanden
             // gør dette synligt for browsertesten uden at påvirke spillet.
@@ -802,8 +803,13 @@
         message = text;
         // Førstegangs-hints skal kunne læses midt i bevægelsen. De korte
         // arkadelabels beholder deres oprindelige tempo, mens HINT-linjer får
-        // mindst 5 sekunder under DEX.
-        messageTime = text.startsWith('HINT:') ? Math.max(duration, 5) : duration;
+        // mindst 5 sekunder i et fast felt nederst på skærmen.
+        messageDuration = text.startsWith('HINT:') ? Math.max(duration, 5) : duration;
+        messageTime = messageDuration;
+        // Korte hændelsestekster fastholdes dér, hvor hændelsen skete. De
+        // bliver derfor ikke ved med at følge DEX gennem banen.
+        messageAnchorX = player.x - cameraX + PLAYER_WIDTH / 2;
+        messageAnchorY = HUD_HEIGHT + player.y - 5;
     }
 
     function loseLife(reason, ignoreInvulnerability = false) {
@@ -1008,15 +1014,20 @@
         const isLevelShortcut = Number.isInteger(selectedLevelIndex)
             && selectedLevelIndex >= 0
             && selectedLevelIndex < levels.length;
-        if (['arrowleft', 'arrowright', 'arrowup', 'a', 'z', ' '].includes(key)
+        if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'a', 'z', ' '].includes(key)
             || isLevelShortcut) {
             event.preventDefault();
         }
 
         // I attract-demoen overtager den første spiltast øjeblikkeligt. Et
         // tal vælger fortsat bane, mens øvrige taster starter bane 1.
-        const isGameplayControl = ['arrowleft', 'arrowright', 'arrowup', 'a', 'z', ' ']
+        const isGameplayControl = ['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'a', 'z', ' ']
             .includes(key) || isLevelShortcut;
+        // Den første spiltast er samtidig den brugerhandling, som browseren
+        // kræver for at tillade lyd. Spilleren behøver derfor intet ekstra klik.
+        if (isGameplayControl && !event.repeat && !attractAudioUnlocked) {
+            void unlockAttractAudio();
+        }
         if (demoMode && isGameplayControl && !event.repeat) {
             const requestedLevel = isLevelShortcut ? selectedLevelIndex : 0;
             startLevel(requestedLevel);
@@ -1042,9 +1053,11 @@
             || gameState === 'game-over'
             || gameState === 'life-lost';
         const isStartKey = key === 'z'
+            || key === 'a'
             || key === 'arrowleft'
             || key === 'arrowright'
-            || key === 'arrowup';
+            || key === 'arrowup'
+            || key === 'arrowdown';
         if (canStartOrRestart && isStartKey) {
             if (gameState === 'life-lost') {
                 respawn();
@@ -1510,7 +1523,7 @@
                 pumpHUDUnlocked = true;
                 pumpInsulinStored = 0;
                 if (!pumpHintShown) {
-                    setMessage('HINT: PRESS Z TO USE INSULIN FROM THE PUMP', 3.2);
+                    setMessage('HINT: PRESS "Z" TO USE INSULIN FROM THE PUMP', 3.2);
                     pumpHintShown = true;
                 } else {
                     setMessage('PUMP READY', 0.8);
@@ -1545,7 +1558,7 @@
                 candyStock += 1;
                 candyHUDUnlocked = true;
                 if (!candyHintShown) {
-                    setMessage('HINT: PRESS A TO USE CANDY AND RAISE BLOOD SUGAR', 3.2);
+                    setMessage('HINT: PRESS "A" TO USE CANDY AND RAISE BLOOD SUGAR', 3.2);
                     candyHintShown = true;
                 } else {
                     setMessage('+1 CANDY', 0.65);
@@ -1752,27 +1765,7 @@
         context.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
         drawOverscannedBaseBackground();
 
-        // Begge transparente motivlag beskæres til deres faktiske indhold og
-        // forankres et par pixels nede i banen. Dermed findes der ingen skjult
-        // transparent bund, vandret fyldeflade eller bjergfod, der kan svæve.
-        drawGroundedParallaxLayer(parallaxImages.far, {
-            speed: 0.06,
-            alpha: 0.60,
-            filter: 'grayscale(46%) saturate(52%) brightness(106%)',
-            sourceTopRatio: 0.06,
-            sourceBottomRatio: 0.90,
-            drawHeight: 156,
-            groundOverlap: 4,
-        });
-        drawGroundedParallaxLayer(parallaxImages.middle, {
-            speed: 0.16,
-            alpha: 0.66,
-            filter: 'grayscale(28%) saturate(68%) contrast(92%) brightness(96%)',
-            sourceTopRatio: 0.42,
-            sourceBottomRatio: 0.71,
-            drawHeight: 62,
-            groundOverlap: 4,
-        });
+        drawMiddleGroundLayer();
     }
 
     function drawOverscannedBaseBackground() {
@@ -1798,42 +1791,41 @@
         context.restore();
     }
 
-    function drawGroundedParallaxLayer(image, options) {
-        if (!image.complete || image.naturalWidth <= 0) return;
+    function drawMiddleGroundLayer() {
+        if (!middleGroundImage.complete || middleGroundImage.naturalWidth <= 0) return;
 
-        const sourceY = Math.round(image.naturalHeight * options.sourceTopRatio);
-        const sourceBottom = Math.round(
-            image.naturalHeight * options.sourceBottomRatio,
-        );
-        const sourceHeight = Math.max(1, sourceBottom - sourceY);
-        const drawWidth = Math.ceil(
-            options.drawHeight * image.naturalWidth / sourceHeight,
-        );
-        const parallaxOffset = ((cameraX * options.speed) % drawWidth + drawWidth)
-            % drawWidth;
-        const groundScreenY = HUD_HEIGHT + getCurrentLevel().groundY;
-        const drawY = groundScreenY - options.drawHeight + options.groundOverlap;
+        // Laget bevæger sig lidt hurtigere end basisbaggrunden (0,02), men
+        // langsomt nok til at bevare indtrykket af et egentligt mellemlag.
+        // Den lave faktor holder samtidig junglesilhuetten under gameplayet.
+        const speed = 0.055;
+        // Den øverste halvdel af kildefilen er ren alfatransparens. Den
+        // beskæres kun for at undgå at skalere tomme pixels; selve naturens
+        // organiske overkant og alle detaljer forbliver urørte.
+        const sourceY = Math.floor(middleGroundImage.naturalHeight * 0.48);
+        const sourceHeight = middleGroundImage.naturalHeight - sourceY;
+        const maximumCameraX = Math.max(0, getCurrentLevel().width - SCREEN_WIDTH);
+        const drawWidth = SCREEN_WIDTH + maximumCameraX * speed + 6;
+        const drawHeight = drawWidth * sourceHeight / middleGroundImage.naturalWidth;
+        const drawX = -cameraX * speed;
+        // Laget fortsætter under canvasbunden. Det sænker trætoppene og viser
+        // mere af bjergbaggrunden uden at skabe transparens langs nederkanten.
+        const drawY = SCREEN_HEIGHT - drawHeight + 12;
 
         context.save();
         context.beginPath();
         context.rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HUD_HEIGHT);
         context.clip();
-        context.globalAlpha = options.alpha;
-        context.filter = options.filter;
-        const lastVisibleCopy = Math.ceil(SCREEN_WIDTH / drawWidth) + 1;
-        for (let copyIndex = -1; copyIndex <= lastVisibleCopy; copyIndex += 1) {
-            context.drawImage(
-                image,
-                0,
-                sourceY,
-                image.naturalWidth,
-                sourceHeight,
-                copyIndex * drawWidth - parallaxOffset,
-                drawY,
-                drawWidth,
-                options.drawHeight,
-            );
-        }
+        context.drawImage(
+            middleGroundImage,
+            0,
+            sourceY,
+            middleGroundImage.naturalWidth,
+            sourceHeight,
+            drawX,
+            drawY,
+            drawWidth,
+            drawHeight,
+        );
         context.restore();
     }
 
@@ -3328,39 +3320,45 @@
 
     function drawMessage() {
         if (messageTime <= 0 || gameState !== 'playing') return;
-        context.font = 'bold 8px monospace';
-        const width = Math.min(SCREEN_WIDTH - 4, context.measureText(message).width + 12);
-        const playerScreenCenterX = player.x - cameraX + PLAYER_WIDTH / 2;
-        const x = Math.round(clamp(
-            playerScreenCenterX - width / 2,
-            2,
-            SCREEN_WIDTH - width - 2,
-        ));
-        // På jorden er der kun et smalt bånd under fødderne. Pladen klippes
-        // derfor til skærmens nederste kant, men dens pil bliver ved med at pege
-        // mod DEX. På platforme følger den naturligt med lige under figuren.
-        const desiredY = HUD_HEIGHT + player.y + PLAYER_HEIGHT + 2;
-        const y = Math.round(clamp(desiredY, HUD_HEIGHT + 2, SCREEN_HEIGHT - 17));
-        const pointerX = clamp(playerScreenCenterX, x + 7, x + width - 7);
         const isHint = message.startsWith('HINT:');
 
         context.save();
-        context.fillStyle = 'rgba(10, 12, 35, 0.92)';
-        context.fillRect(x, y, width, 15);
-        context.strokeStyle = isHint ? '#75efff' : '#ffd85b';
-        context.lineWidth = 1;
-        context.strokeRect(x + 0.5, y + 0.5, width - 1, 14);
-        context.fillStyle = context.strokeStyle;
-        context.beginPath();
-        context.moveTo(pointerX - 3, y);
-        context.lineTo(pointerX + 3, y);
-        context.lineTo(pointerX, y - 3);
-        context.closePath();
-        context.fill();
-        context.fillStyle = '#ffffff';
-        context.textAlign = 'center';
-        context.textBaseline = 'top';
-        context.fillText(message, x + width / 2, y + 4, width - 8);
+
+        if (isHint) {
+            // Betjeningstips har en stabil placering i bunden. De bevæger sig
+            // ikke med figuren og beholder en rolig bagplade for læsbarhed.
+            const hintText = message.replace(/^HINT:\s*/, '');
+            context.font = 'bold 7px monospace';
+            const width = Math.min(SCREEN_WIDTH - 44, context.measureText(hintText).width + 14);
+            const x = Math.round((SCREEN_WIDTH - width) / 2);
+            const y = SCREEN_HEIGHT - 18;
+            context.fillStyle = 'rgba(10, 12, 35, 0.88)';
+            context.fillRect(x, y, width, 14);
+            context.strokeStyle = '#75efff';
+            context.lineWidth = 1;
+            context.strokeRect(x + 0.5, y + 0.5, width - 1, 13);
+            context.fillStyle = '#ffffff';
+            context.textAlign = 'center';
+            context.textBaseline = 'top';
+            context.fillText(hintText, x + width / 2, y + 4, width - 8);
+        } else {
+            // Pickups og handlinger er diskrete arkadetekster uden bagplade.
+            // De står ved hændelsesstedet og toner ud over deres korte levetid.
+            const fadeProgress = messageDuration > 0
+                ? clamp(messageTime / messageDuration, 0, 1)
+                : 0;
+            context.globalAlpha = fadeProgress;
+            context.font = 'bold 6px monospace';
+            context.textAlign = 'center';
+            context.textBaseline = 'bottom';
+            context.lineWidth = 2;
+            context.strokeStyle = 'rgba(13, 9, 37, 0.72)';
+            context.fillStyle = '#fff3a3';
+            const x = Math.round(clamp(messageAnchorX, 34, SCREEN_WIDTH - 34));
+            const y = Math.round(clamp(messageAnchorY, HUD_HEIGHT + 10, SCREEN_HEIGHT - 20));
+            context.strokeText(message, x, y, SCREEN_WIDTH - 50);
+            context.fillText(message, x, y, SCREEN_WIDTH - 50);
+        }
         context.restore();
     }
 

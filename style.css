@@ -195,14 +195,26 @@ body {
     letter-spacing: 0.14em;
 }
 
+.title-keyboard-map {
+    display: none;
+}
+
 .title-screen .title-keyboard-map {
     position: absolute;
-    top: 35%;
-    bottom: auto;
+    top: auto;
+    bottom: 4.5%;
     left: 4%;
     display: flex;
     align-items: flex-end;
     gap: clamp(16px, 3vw, 34px);
+}
+
+.keyboard-group-label {
+    color: #fff27e;
+    font-size: clamp(8px, 1.15vw, 13px);
+    letter-spacing: 0.12em;
+    text-align: center;
+    text-shadow: 1px 2px 0 #5e155f, 0 0 9px rgba(255, 141, 43, 0.72);
 }
 
 .title-keyboard-map kbd {
@@ -247,8 +259,8 @@ body {
 
 .title-screen #overlayPrompt {
     position: absolute;
-    top: 54%;
-    bottom: auto;
+    top: auto;
+    bottom: calc(4.5% + clamp(96px, 11vw, 126px));
     left: 4%;
     max-width: 30%;
     color: #fff27e;
