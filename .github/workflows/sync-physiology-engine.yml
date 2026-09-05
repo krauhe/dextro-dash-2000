@@ -1,0 +1,62 @@
+name: Sync physiology engine
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-t1d-physiology-engine
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Check T1D Simulator for engine updates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out DEXTRO DASH 2000
+        uses: actions/checkout@v4
+
+      - name: Check out the upstream T1D Simulator
+        uses: actions/checkout@v4
+        with:
+          repository: krauhe/t1d-simulator
+          ref: main
+          path: .upstream/t1d-simulator
+
+      - name: Copy the upstream engine files
+        shell: bash
+        run: |
+          cp .upstream/t1d-simulator/js/hovorka.js engine/hovorka.js
+          cp .upstream/t1d-simulator/js/physiology-engine.js engine/physiology-engine.js
+          rm -rf .upstream
+
+      - name: Validate the synchronized engine
+        run: |
+          node --check engine/hovorka.js
+          node --check engine/physiology-engine.js
+          node tests/engine-smoke.test.js
+
+      - name: Open or update the engine sync pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/sync-t1d-physiology
+          delete-branch: true
+          commit-message: "Sync physiology engine from T1D Simulator"
+          title: "Sync physiology engine from T1D Simulator"
+          body: |
+            This automated pull request synchronizes the reusable physiology engine from the public T1D Simulator `main` branch.
+
+            Updated mappings:
+            - `js/hovorka.js` to `engine/hovorka.js`
+            - `js/physiology-engine.js` to `engine/physiology-engine.js`
+
+            The workflow has completed syntax checks and the standalone engine smoke test. Review gameplay compatibility before merging.
+          add-paths: |
+            engine/hovorka.js
+            engine/physiology-engine.js

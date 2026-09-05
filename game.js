@@ -15,6 +15,7 @@
     const overlayTitle = document.getElementById('overlayTitle');
     const overlaySubtitle = document.getElementById('overlaySubtitle');
     const overlayPrompt = document.getElementById('overlayPrompt');
+    const demoBadge = document.getElementById('demoBadge');
     const liveStatus = document.getElementById('liveStatus');
     const musicToggle = document.getElementById('musicToggle');
     const soundToggle = document.getElementById('soundToggle');
@@ -76,6 +77,12 @@
     // at alle tre lagerpladser tømmes i samme frame over tærsklen.
     const AUTO_PUMP_TRIGGER_BG_MMOL_L = 7;
     const AUTO_PUMP_DOSE_COOLDOWN_SECONDS = 5;
+    // En klassisk attract loop skifter automatisk mellem titel, credits og en
+    // kort computerstyret bane, når ingen spiller rører tastaturet.
+    const ATTRACT_TITLE_SECONDS = 8;
+    const ATTRACT_CREDITS_SECONDS = 6;
+    const ATTRACT_DEMO_SECONDS = 16;
+    const DEMO_JUMP_INTERVAL_SECONDS = 1.45;
     const PIZZA_THROW_WINDUP_SECONDS = 0.7;
     const PIZZA_THROW_MIN_COOLDOWN_SECONDS = 3.6;
     const PIZZA_THROW_COOLDOWN_VARIATION_SECONDS = 1.8;
@@ -212,6 +219,11 @@
     const SOUND_STORAGE_KEY = 'dextro-dash-2000-effects';
 
     let gameState = 'title';
+    let attractPhase = 'title';
+    let attractElapsedSeconds = 0;
+    let demoMode = false;
+    let demoElapsedSeconds = 0;
+    let demoJumpCooldownSeconds = 0;
     let previousFrameTime = performance.now();
     let accumulatedTime = 0;
     let cameraX = 0;
@@ -484,6 +496,9 @@
     // begynde som et nyt spil, så fysiologi, point og liv er reproducerbare.
     function startLevel(levelIndex) {
         audio.start();
+        demoMode = false;
+        demoBadge.classList.add('hidden');
+        demoBadge.setAttribute('aria-hidden', 'true');
         currentLevelIndex = clamp(levelIndex, 0, levels.length - 1);
         resetRun();
         gameState = 'playing';
@@ -493,6 +508,9 @@
     }
 
     function startNextLevel() {
+        demoMode = false;
+        demoBadge.classList.add('hidden');
+        demoBadge.setAttribute('aria-hidden', 'true');
         currentLevelIndex += 1;
         collectedDiamondCount = 0;
         resetRun({ keepScore: true, keepLives: true, keepDiscoveries: true });
@@ -502,16 +520,104 @@
         announce(`Stage ${currentLevelIndex + 1} started`);
     }
 
-    function showOverlay(title, subtitle, prompt) {
+    function showOverlay(title, subtitle, prompt, mode = 'game') {
         overlayTitle.textContent = title;
         overlaySubtitle.textContent = subtitle;
         overlaySubtitle.classList.remove('stage-tally');
         overlayPrompt.textContent = prompt;
+        overlay.classList.toggle('title-screen', mode === 'title');
+        overlay.classList.toggle('credits-screen', mode === 'credits');
         overlay.classList.remove('hidden');
     }
 
     function hideOverlay() {
         overlay.classList.add('hidden');
+    }
+
+    function showAttractTitle() {
+        demoMode = false;
+        keys.left = false;
+        keys.right = false;
+        attractPhase = 'title';
+        attractElapsedSeconds = 0;
+        gameState = 'title';
+        demoBadge.classList.add('hidden');
+        demoBadge.setAttribute('aria-hidden', 'true');
+        showOverlay(
+            'DEXTRO DASH 2000',
+            'STARRING DEX',
+            'PRESS Z OR AN ARROW KEY',
+            'title',
+        );
+        announce('DEXTRO DASH 2000. Starring DEX. Press an arrow key to play.');
+    }
+
+    function showAttractCredits() {
+        attractPhase = 'credits';
+        attractElapsedSeconds = 0;
+        showOverlay(
+            'CREDITS',
+            'CONCEPT & DIRECTION: KRISTIAN\nPHYSIOLOGY ENGINE: T1D SIMULATOR\nORIGINAL GAME ART, CODE & MUSIC\nLICENSE: GNU GPL V3',
+            'DEMO MODE STARTING...',
+            'credits',
+        );
+    }
+
+    function startAttractDemo() {
+        currentLevelIndex = 0;
+        resetRun();
+        demoMode = true;
+        demoElapsedSeconds = 0;
+        demoJumpCooldownSeconds = 0.55;
+        gameState = 'playing';
+        hideOverlay();
+        demoBadge.classList.remove('hidden');
+        demoBadge.setAttribute('aria-hidden', 'false');
+        keys.left = false;
+        keys.right = true;
+        announce('Demo mode. Press a key to play.');
+    }
+
+    function updateAttractLoop(deltaSeconds) {
+        attractElapsedSeconds += deltaSeconds;
+        if (attractPhase === 'title'
+            && attractElapsedSeconds >= ATTRACT_TITLE_SECONDS) {
+            showAttractCredits();
+            return;
+        }
+        if (attractPhase === 'credits'
+            && attractElapsedSeconds >= ATTRACT_CREDITS_SECONDS) {
+            startAttractDemo();
+        }
+    }
+
+    function updateDemoController(deltaSeconds) {
+        demoElapsedSeconds += deltaSeconds;
+        demoJumpCooldownSeconds -= deltaSeconds;
+        keys.left = false;
+        keys.right = true;
+
+        // DEX hopper regelmæssigt, men fremskynder næste hop, når en fjende
+        // eller afslutningen på den aktuelle jordplatform nærmer sig.
+        const obstacleAhead = enemies.some((enemy) => (
+            enemy.alive
+            && enemy.x > player.x
+            && enemy.x - player.x < 42
+        ));
+        const supportingPlatform = getCurrentLevel().platforms.find((platform) => (
+            player.x + PLAYER_WIDTH / 2 >= platform.x
+            && player.x + PLAYER_WIDTH / 2 <= platform.x + platform.width
+            && Math.abs(player.y + PLAYER_HEIGHT - platform.y) < 5
+        ));
+        const edgeAhead = supportingPlatform
+            && supportingPlatform.x + supportingPlatform.width - player.x < 45;
+        if (player.onGround
+            && (demoJumpCooldownSeconds <= 0 || obstacleAhead || edgeAhead)) {
+            jump();
+            demoJumpCooldownSeconds = DEMO_JUMP_INTERVAL_SECONDS;
+        }
+
+        if (demoElapsedSeconds >= ATTRACT_DEMO_SECONDS) showAttractTitle();
     }
 
     function announce(text) {
@@ -665,6 +771,10 @@
     function loseLife(reason, ignoreInvulnerability = false) {
         if (gameState !== 'playing') return;
         if (player.invulnerableTime > 0 && !ignoreInvulnerability) return;
+        if (demoMode) {
+            showAttractTitle();
+            return;
+        }
         lives -= 1;
         gameState = 'dying';
         deathTime = 1.7;
@@ -717,6 +827,10 @@
 
     function winLevel() {
         if (gameState !== 'playing') return;
+        if (demoMode) {
+            showAttractTitle();
+            return;
+        }
         const hasNextLevel = currentLevelIndex < levels.length - 1;
         const timeBonus = Math.floor(remainingTimeSeconds) * POINTS_PER_REMAINING_SECOND;
         const tirFraction = getTIRFraction();
@@ -861,6 +975,19 @@
             event.preventDefault();
         }
 
+        // I attract-demoen overtager den første spiltast øjeblikkeligt. Et
+        // tal vælger fortsat bane, mens øvrige taster starter bane 1.
+        const isGameplayControl = ['arrowleft', 'arrowright', 'arrowup', 'a', 'z', ' ']
+            .includes(key) || isLevelShortcut;
+        if (demoMode && isGameplayControl && !event.repeat) {
+            const requestedLevel = isLevelShortcut ? selectedLevelIndex : 0;
+            startLevel(requestedLevel);
+            keys.left = key === 'arrowleft';
+            keys.right = key === 'arrowright';
+            if (key === 'arrowup' || key === ' ') jump();
+            return;
+        }
+
         // 1 og 2 vælger bane direkte fra enhver spiltilstand. Kontrollen
         // ligger før de almindelige starttaster, så tal aldrig bruger bolsje
         // eller fortsætter en afsluttet bane ved en fejl.
@@ -922,7 +1049,7 @@
     });
     canvas.addEventListener('pointerdown', () => {
         canvas.focus();
-        if (gameState === 'title') startGame();
+        if (gameState === 'title' || demoMode) startGame();
     });
     musicToggle.addEventListener('click', () => {
         toggleMusic();
@@ -934,6 +1061,10 @@
     });
 
     function update(deltaSeconds) {
+        if (gameState === 'title') {
+            updateAttractLoop(deltaSeconds);
+            return;
+        }
         if (gameState === 'dying') {
             updateDeath(deltaSeconds);
             return;
@@ -944,6 +1075,11 @@
         }
         if (gameState === 'life-lost') return;
         if (gameState !== 'playing') return;
+
+        if (demoMode) {
+            updateDemoController(deltaSeconds);
+            if (gameState !== 'playing') return;
+        }
 
         elapsedRealSeconds += deltaSeconds;
         remainingTimeSeconds = Math.max(0, remainingTimeSeconds - deltaSeconds);
@@ -1127,11 +1263,9 @@
                     // kulhydrat. Det er den eneste farlige Fizzler-tilstand.
                     enemy.alive = false;
                     player.eatAnticipation = 0;
-                    spawnParticles(
+                    spawnFizzlerExplosion(
                         enemy.x + enemy.width / 2,
                         enemy.y + enemy.height / 2,
-                        '#ff7a3d',
-                        28,
                     );
                     loseLife('FIZZLER EXPLODED', true);
                     continue;
@@ -1451,11 +1585,75 @@
         });
     }
 
+    function spawnFizzlerExplosion(x, y) {
+        // Fizzlers farlige eksplosion skal kunne skelnes tydeligt fra den
+        // almindelige lille partikelsky. Flere lag giver først et hvidt glimt,
+        // derefter sodavandsdråber, dåsestumper og tre voksende trykbølger.
+        const dropletColors = ['#7cf5ff', '#19c9d8', '#fff3a3', '#ff7a3d'];
+        for (let index = 0; index < 38; index += 1) {
+            const angle = Math.PI * 2 * index / 38 + (index % 3) * 0.11;
+            const speed = 35 + (index % 7) * 8;
+            particles.push({
+                kind: 'fizz-droplet',
+                x,
+                y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 31,
+                gravity: 92,
+                life: 0.62 + (index % 4) * 0.06,
+                maximumLife: 0.8,
+                size: 1.5 + (index % 3) * 0.65,
+                color: dropletColors[index % dropletColors.length],
+            });
+        }
+
+        for (let index = 0; index < 9; index += 1) {
+            const angle = Math.PI * 2 * index / 9 + 0.18;
+            particles.push({
+                kind: 'fizz-shard',
+                x,
+                y,
+                vx: Math.cos(angle) * (42 + index * 3),
+                vy: Math.sin(angle) * (35 + index * 2) - 27,
+                gravity: 105,
+                life: 0.78,
+                maximumLife: 0.78,
+                rotation: angle,
+                spin: index % 2 === 0 ? 13 : -13,
+                color: index % 2 === 0 ? '#16d3db' : '#ff7a3d',
+            });
+        }
+
+        particles.push({
+            kind: 'fizz-flash', x, y, vx: 0, vy: 0, gravity: 0,
+            life: 0.2, maximumLife: 0.2, color: '#ffffff',
+        });
+        for (let index = 0; index < 3; index += 1) {
+            particles.push({
+                kind: 'fizz-shockwave',
+                x,
+                y,
+                vx: 0,
+                vy: 0,
+                gravity: 0,
+                life: 0.62 + index * 0.1,
+                maximumLife: 0.62 + index * 0.1,
+                delay: index * 0.07,
+                startRadius: 4 + index * 2,
+                endRadius: 30 + index * 8,
+                color: index === 1 ? '#ff9a45' : '#8ff9ff',
+            });
+        }
+    }
+
     function updateParticles(deltaSeconds) {
         for (const particle of particles) {
             particle.x += particle.vx * deltaSeconds;
             particle.y += particle.vy * deltaSeconds;
             particle.vy += (particle.gravity ?? 70) * deltaSeconds;
+            if (particle.rotation !== undefined) {
+                particle.rotation += (particle.spin ?? 0) * deltaSeconds;
+            }
             particle.life -= deltaSeconds;
         }
         particles = particles.filter((particle) => particle.life > 0);
@@ -2267,8 +2465,13 @@
     }
 
     function drawCheekCGM(spriteSize) {
+        // Sensoren sidder kun på DEX' højre kind. Når han vender om og løber
+        // tilbage mod banens start, ser spilleren den modsatte kind, og CGM'en
+        // skal derfor ikke spejles kunstigt over på den side.
+        if (player.facing < 0) return;
+
         // Den færdigrenderede sensor tegnes i figurens lokale koordinater. Den
-        // følger dermed automatisk spejling, rotation, hop, løb og spiseframes.
+        // følger dermed automatisk rotation, hop, løb og spiseframes.
         // Det bløde klæbeplaster, kabinettets perspektiv og kontaktskyggen er
         // en del af billedet, så CGM'en ser fastgjort ud i stedet for påmalet.
         const unit = spriteSize / 32;
@@ -2281,7 +2484,7 @@
         const smoothStep = (value) => value * value * (3 - 2 * value);
         const lowSeverity = smoothStep(clamp((5.2 - bg) / 2.4, 0, 1));
         const highSeverity = smoothStep(clamp((bg - 8) / 10, 0, 1));
-        const normalColor = [110, 227, 193];
+        const normalColor = [33, 148, 105];
         const lowColor = [255, 73, 103];
         const highColor = [255, 159, 67];
         const targetColor = lowSeverity > 0
@@ -2807,6 +3010,92 @@
                 context.restore();
                 continue;
             }
+            if (particle.kind === 'fizz-flash') {
+                const visibleFraction = clamp(
+                    particle.life / particle.maximumLife,
+                    0,
+                    1,
+                );
+                context.save();
+                context.globalCompositeOperation = 'screen';
+                context.globalAlpha = visibleFraction * 0.9;
+                const flashGradient = context.createRadialGradient(
+                    particle.x, particle.y, 0,
+                    particle.x, particle.y, 28 * (1.1 - visibleFraction * 0.25),
+                );
+                flashGradient.addColorStop(0, '#ffffff');
+                flashGradient.addColorStop(0.28, '#9bfbff');
+                flashGradient.addColorStop(1, 'rgba(255, 122, 61, 0)');
+                context.fillStyle = flashGradient;
+                context.beginPath();
+                context.arc(particle.x, particle.y, 30, 0, Math.PI * 2);
+                context.fill();
+                context.restore();
+                continue;
+            }
+            if (particle.kind === 'fizz-shockwave') {
+                const elapsed = particle.maximumLife - particle.life;
+                if (elapsed < particle.delay) continue;
+                const progress = clamp(
+                    (elapsed - particle.delay) / (particle.maximumLife - particle.delay),
+                    0,
+                    1,
+                );
+                const radius = particle.startRadius
+                    + (particle.endRadius - particle.startRadius) * progress;
+                context.save();
+                context.globalCompositeOperation = 'screen';
+                context.globalAlpha = (1 - progress) * 0.85;
+                context.strokeStyle = particle.color;
+                context.lineWidth = 2.4 - progress * 1.4;
+                context.beginPath();
+                context.arc(particle.x, particle.y, radius, 0, Math.PI * 2);
+                context.stroke();
+                context.restore();
+                continue;
+            }
+            if (particle.kind === 'fizz-shard') {
+                const visibleFraction = clamp(
+                    particle.life / particle.maximumLife,
+                    0,
+                    1,
+                );
+                context.save();
+                context.globalAlpha = Math.min(1, visibleFraction * 1.7);
+                context.translate(particle.x, particle.y);
+                context.rotate(particle.rotation);
+                context.fillStyle = particle.color;
+                context.fillRect(-3.2, -1.35, 6.4, 2.7);
+                context.fillStyle = '#e9ffff';
+                context.fillRect(-2.2, -0.75, 3.1, 0.65);
+                context.restore();
+                continue;
+            }
+            if (particle.kind === 'fizz-droplet') {
+                const visibleFraction = clamp(
+                    particle.life / particle.maximumLife,
+                    0,
+                    1,
+                );
+                context.save();
+                context.globalAlpha = Math.min(1, visibleFraction * 1.8);
+                context.fillStyle = particle.color;
+                context.beginPath();
+                context.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+                context.fill();
+                context.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                context.beginPath();
+                context.arc(
+                    particle.x - particle.size * 0.28,
+                    particle.y - particle.size * 0.3,
+                    particle.size * 0.26,
+                    0,
+                    Math.PI * 2,
+                );
+                context.fill();
+                context.restore();
+                continue;
+            }
             context.fillStyle = particle.color;
             context.fillRect(Math.round(particle.x), Math.round(particle.y), 2, 2);
         }
@@ -3132,6 +3421,6 @@
     setMusicEnabled(readAudioPreference(MUSIC_STORAGE_KEY), false);
     setSoundEnabled(readAudioPreference(SOUND_STORAGE_KEY), false);
     resetRun();
-    showOverlay('DEXTRO DASH 2000', 'STAGE 1', 'PRESS Z OR AN ARROW KEY');
+    showAttractTitle();
     window.requestAnimationFrame(frame);
 }());

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>DEXTRO DASH 2000 - playable prototype</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23100b28'/><circle cx='16' cy='16' r='10' fill='%237d24b7'/><circle cx='13' cy='13' r='2' fill='white'/><circle cx='20' cy='13' r='2' fill='white'/><path d='M11 20 Q16 24 22 19' fill='none' stroke='%237cf5ff' stroke-width='2' stroke-linecap='round'/></svg>">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=0.1.0">
 </head>
 <body>
     <main class="game-page">
@@ -18,11 +18,17 @@
                 aria-label="Playable platform game. Use the left and right arrow keys to run, the up arrow to jump, Z to release stored pump insulin, and A to eat candy.">
             </canvas>
 
-            <div id="gameOverlay" class="game-overlay">
+            <div id="gameOverlay" class="game-overlay title-screen">
+                <p class="title-kicker">A PHYSIOLOGY-POWERED ARCADE</p>
                 <h1 id="overlayTitle">DEXTRO DASH 2000</h1>
                 <p id="overlaySubtitle">STAGE 01</p>
                 <p class="controls-line">← → RUN&nbsp;&nbsp; ↑ JUMP&nbsp;&nbsp; Z PUMP&nbsp;&nbsp; A CANDY&nbsp;&nbsp; 1/2 STAGE&nbsp;&nbsp; M MUSIC&nbsp;&nbsp; L SOUND</p>
                 <p id="overlayPrompt" class="blink">PRESS Z OR AN ARROW KEY</p>
+            </div>
+
+            <div id="demoBadge" class="demo-badge hidden" aria-hidden="true">
+                <strong>DEMO MODE</strong>
+                    <span>PRESS ARROWS / A / Z TO PLAY</span>
             </div>
 
             <p id="liveStatus" class="sr-only" aria-live="polite"></p>
@@ -39,11 +45,11 @@
     </main>
 
     <!-- Prototypen er selvstændig: de 2 motorfiler ligger lokalt i engine/. -->
-    <script src="engine/hovorka.js"></script>
-    <script src="engine/physiology-engine.js"></script>
-    <script src="level-01.js"></script>
-    <script src="level-02.js"></script>
-    <script src="audio.js"></script>
-    <script src="game.js"></script>
+    <script src="engine/hovorka.js?v=0.1.0"></script>
+    <script src="engine/physiology-engine.js?v=0.1.0"></script>
+    <script src="level-01.js?v=0.1.0"></script>
+    <script src="level-02.js?v=0.1.0"></script>
+    <script src="audio.js?v=0.1.0"></script>
+    <script src="game.js?v=0.1.0"></script>
 </body>
 </html>
