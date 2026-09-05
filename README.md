@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/title-splash.png" width="900" alt="DEXTRO DASH 2000 title artwork showing DEX smashing through a cake monster">
+  <img src="assets/title-splash-v2.png" width="900" alt="DEXTRO DASH 2000 title artwork showing DEX smashing through a cake monster">
 </p>
 
 <h1 align="center">DEXTRO DASH 2000</h1>
@@ -26,6 +26,13 @@ Food is part of the level design. Running into a food monster means eating it, w
 
 The game currently contains two playable stages, an animated title screen, credits and an automatic attract-mode demo.
 
+## Gameplay
+
+<p align="center">
+  <img src="docs/screenshots/gameplay-stage-1.png" width="49%" alt="DEX running toward a cake monster in stage 1">
+  <img src="docs/screenshots/gameplay-stage-2.png" width="49%" alt="DEX approaching pump equipment in stage 2">
+</p>
+
 ## Play
 
 **[Launch DEXTRO DASH 2000](https://krauhe.github.io/dextro-dash-2000/)**
@@ -40,7 +47,6 @@ The game runs directly in a modern desktop browser. No installation, account or 
 | Up | Jump |
 | A | Use one collected 10 g fast-acting candy |
 | Z | Use one stored insulin dose when the manual pump is equipped |
-| 1 / 2 | Start the selected stage directly |
 | M | Toggle music |
 | L | Toggle sound effects |
 
@@ -87,7 +93,8 @@ There is no framework, package installation or compilation step. The project is 
 
 ## Credits
 
-**Concept and direction:** Kristian<br>
+**Concept and direction:** Kristian Rauhe Harreby<br>
+**Development and creative collaboration:** OpenAI Codex<br>
 **Original game art, code and music:** DEXTRO DASH 2000 project<br>
 **Physiology engine:** [T1D Simulator](https://github.com/krauhe/t1d-simulator)<br>
 **Core glucose-insulin model:** Hovorka model implementation distributed with T1D Simulator

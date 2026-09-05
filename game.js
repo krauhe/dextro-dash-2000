@@ -166,10 +166,10 @@
     // træer og planter er synlige; resten af hvert billede er transparent.
     const parallaxImages = {
         far: new Image(),
-        nearBackground: new Image(),
+        middle: new Image(),
     };
     parallaxImages.far.src = 'assets/parallax-far.png';
-    parallaxImages.nearBackground.src = 'assets/parallax-front.png';
+    parallaxImages.middle.src = 'assets/parallax-mid.png';
 
     // Store kildebilleder i høj opløsning, og skalér dem glat ned til spillets
     // lille canvas. Derved bevarer insulinpen og bolsje hver sin klare silhuet.
@@ -221,6 +221,7 @@
     let gameState = 'title';
     let attractPhase = 'title';
     let attractElapsedSeconds = 0;
+    let attractAudioUnlocked = false;
     let demoMode = false;
     let demoElapsedSeconds = 0;
     let demoJumpCooldownSeconds = 0;
@@ -495,7 +496,16 @@
     // Talgenvejene er et udviklingsværktøj: en direkte banestart skal altid
     // begynde som et nyt spil, så fysiologi, point og liv er reproducerbare.
     function startLevel(levelIndex) {
-        audio.start();
+        audio.start().then(() => {
+            // Piletasten er også en gyldig browser-gesture. Husk derfor den
+            // aktive kontekst, så en senere titelskærm ikke beder om lyd igen.
+            if (audio.context && audio.context.state === 'running') {
+                attractAudioUnlocked = true;
+                overlay.dataset.audioState = 'running';
+            }
+        }).catch(() => {
+            overlay.dataset.audioState = 'blocked';
+        });
         demoMode = false;
         demoBadge.classList.add('hidden');
         demoBadge.setAttribute('aria-hidden', 'true');
@@ -546,9 +556,12 @@
         showOverlay(
             'DEXTRO DASH 2000',
             'STARRING DEX',
-            'PRESS Z OR AN ARROW KEY',
+            attractAudioUnlocked
+                ? 'PRESS AN ARROW KEY'
+                : 'CLICK TO ENABLE SOUND\nARROWS: PLAY',
             'title',
         );
+        if (attractAudioUnlocked) audio.attractTitle();
         announce('DEXTRO DASH 2000. Starring DEX. Press an arrow key to play.');
     }
 
@@ -557,10 +570,11 @@
         attractElapsedSeconds = 0;
         showOverlay(
             'CREDITS',
-            'CONCEPT & DIRECTION: KRISTIAN\nPHYSIOLOGY ENGINE: T1D SIMULATOR\nORIGINAL GAME ART, CODE & MUSIC\nLICENSE: GNU GPL V3',
+            'CONCEPT & DIRECTION: KRISTIAN RAUHE HARREBY\nDEVELOPMENT & CREATIVE COLLABORATION: OPENAI CODEX\nPHYSIOLOGY ENGINE: T1D SIMULATOR\nORIGINAL GAME ART, CODE & MUSIC\nLICENSE: GNU GPL V3',
             'DEMO MODE STARTING...',
             'credits',
         );
+        if (attractAudioUnlocked) audio.attractCredits();
     }
 
     function startAttractDemo() {
@@ -575,7 +589,28 @@
         demoBadge.setAttribute('aria-hidden', 'false');
         keys.left = false;
         keys.right = true;
+        // Efter det første brugerinput fortsætter den samme chiptune gennem
+        // titel, credits og demo. En kort fanfare markerer demoens start.
+        audio.start();
+        if (attractAudioUnlocked) audio.demoStart();
         announce('Demo mode. Press a key to play.');
+    }
+
+    async function unlockAttractAudio() {
+        if (attractAudioUnlocked) return;
+        try {
+            await audio.start();
+            attractAudioUnlocked = true;
+            overlay.dataset.audioState = audio.context
+                ? audio.context.state
+                : 'unavailable';
+            audio.attractTitle();
+            if (gameState === 'title') overlayPrompt.textContent = 'ARROWS: PLAY';
+        } catch (error) {
+            // Enkelte browserpolitikker kan fortsat afvise lydstart. Tilstanden
+            // gør dette synligt for browsertesten uden at påvirke spillet.
+            overlay.dataset.audioState = 'blocked';
+        }
     }
 
     function updateAttractLoop(deltaSeconds) {
@@ -640,7 +675,7 @@
         musicToggle.textContent = enabled ? 'MUSIC: ON' : 'MUSIC: OFF';
         musicToggle.setAttribute('aria-pressed', String(enabled));
 
-        if (enabled && gameState !== 'title') audio.start();
+        if (enabled) audio.start();
 
         if (savePreference) {
             try {
@@ -660,7 +695,7 @@
 
         // Effektkanalen kræver også en aktiv AudioContext. Når musikken er
         // slukket, opretter start() konteksten uden at starte melodien.
-        if (enabled && gameState !== 'title') audio.start();
+        if (enabled) audio.start();
 
         if (savePreference) {
             try {
@@ -765,7 +800,10 @@
 
     function setMessage(text, duration) {
         message = text;
-        messageTime = duration;
+        // Førstegangs-hints skal kunne læses midt i bevægelsen. De korte
+        // arkadelabels beholder deres oprindelige tempo, mens HINT-linjer får
+        // mindst 5 sekunder under DEX.
+        messageTime = text.startsWith('HINT:') ? Math.max(duration, 5) : duration;
     }
 
     function loseLife(reason, ignoreInvulnerability = false) {
@@ -1050,6 +1088,12 @@
     canvas.addEventListener('pointerdown', () => {
         canvas.focus();
         if (gameState === 'title' || demoMode) startGame();
+    });
+    overlay.addEventListener('pointerdown', () => {
+        // Klik på attract-skærmene bruges alene til at låse browserlyden op.
+        // Banen starter fortsat med piletasterne som angivet på forsiden.
+        unlockAttractAudio();
+        canvas.focus();
     });
     musicToggle.addEventListener('click', () => {
         toggleMusic();
@@ -1706,62 +1750,77 @@
     function drawBackground() {
         context.fillStyle = '#26245e';
         context.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-        // Grundmotivet udgør en sammenhængende himmel og horisont. De øvrige
-        // billeder har transparent baggrund; de nære lag jordforankres derfor
-        // særskilt nedenfor, mens himlen fortsat kan ses mellem motiverne.
-        drawRepeatingParallaxImage(backgroundImage, 0.02, 1,
-            'grayscale(32%) saturate(68%) contrast(91%) brightness(102%)');
+        drawOverscannedBaseBackground();
 
-        // Fjerne detaljer er lysere, gråere og langsommere end junglen foran.
-        drawRepeatingParallaxImage(parallaxImages.far, 0.06, 0.72,
-            'grayscale(45%) saturate(55%) brightness(106%)');
-
-        // PNG'ens motiv fylder kun den midterste del af billedet. Derfor tegnes
-        // det via en særlig jordforankret funktion; ellers følger den store,
-        // gennemsigtige bund med og får bakkerne til at ligne svævende øer.
-        drawGroundedMiddleParallax();
+        // Begge transparente motivlag beskæres til deres faktiske indhold og
+        // forankres et par pixels nede i banen. Dermed findes der ingen skjult
+        // transparent bund, vandret fyldeflade eller bjergfod, der kan svæve.
+        drawGroundedParallaxLayer(parallaxImages.far, {
+            speed: 0.06,
+            alpha: 0.60,
+            filter: 'grayscale(46%) saturate(52%) brightness(106%)',
+            sourceTopRatio: 0.06,
+            sourceBottomRatio: 0.90,
+            drawHeight: 156,
+            groundOverlap: 4,
+        });
+        drawGroundedParallaxLayer(parallaxImages.middle, {
+            speed: 0.16,
+            alpha: 0.66,
+            filter: 'grayscale(28%) saturate(68%) contrast(92%) brightness(96%)',
+            sourceTopRatio: 0.42,
+            sourceBottomRatio: 0.71,
+            drawHeight: 62,
+            groundOverlap: 4,
+        });
     }
 
-    function drawGroundedMiddleParallax() {
-        const image = parallaxImages.nearBackground;
-        if (!image.complete || image.naturalWidth <= 0) return;
+    function drawOverscannedBaseBackground() {
+        if (!backgroundImage.complete || backgroundImage.naturalWidth <= 0) return;
 
-        // Det tidligere mellemlag bestod af fritstående bakkeøer med en stor
-        // gennemsigtig flade under sig. I stedet bruges det nederste,
-        // sammenhængende plantebælte fra nærbilledet, men bag spilleren.
-        const sourceY = Math.round(image.naturalHeight * 0.55);
-        const sourceHeight = image.naturalHeight - sourceY;
-        const detailHeight = 40;
-        const detailWidth = Math.ceil(
-            detailHeight * image.naturalWidth / sourceHeight,
-        );
-        const parallaxOffset = ((cameraX * 0.22) % detailWidth + detailWidth)
-            % detailWidth;
-        const groundScreenY = HUD_HEIGHT + getCurrentLevel().groundY;
-        const detailY = groundScreenY - detailHeight + 2;
+        // Grundbilledet er ikke lavet som en sømløs flise. I stedet for at
+        // gentage det (som gav en lodret samling) overskaleres ét eksemplar,
+        // så hele banens langsomme kamerarejse rummes inden for samme billede.
+        const speed = 0.02;
+        const maximumCameraX = Math.max(0, getCurrentLevel().width - SCREEN_WIDTH);
+        const drawWidth = SCREEN_WIDTH + maximumCameraX * speed + 4;
+        const drawHeight = drawWidth
+            * backgroundImage.naturalHeight / backgroundImage.naturalWidth;
+        const drawX = -cameraX * speed;
+        const drawY = SCREEN_HEIGHT - drawHeight;
 
         context.save();
         context.beginPath();
         context.rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HUD_HEIGHT);
         context.clip();
+        context.filter = 'grayscale(32%) saturate(68%) contrast(91%) brightness(102%)';
+        context.drawImage(backgroundImage, drawX, drawY, drawWidth, drawHeight);
+        context.restore();
+    }
 
-        // En bred, rolig vegetationsfod begynder før billedets laveste blade.
-        // Motivet overlapper den derfor tydeligt og kan ikke svæve. Hele laget
-        // ligger bag bane, pickups, fjender og spiller.
-        context.globalAlpha = 0.54;
-        context.fillStyle = '#205e5d';
-        context.fillRect(
-            0,
-            groundScreenY - 13,
-            SCREEN_WIDTH,
-            SCREEN_HEIGHT - groundScreenY + 13,
+    function drawGroundedParallaxLayer(image, options) {
+        if (!image.complete || image.naturalWidth <= 0) return;
+
+        const sourceY = Math.round(image.naturalHeight * options.sourceTopRatio);
+        const sourceBottom = Math.round(
+            image.naturalHeight * options.sourceBottomRatio,
         );
-        context.fillStyle = '#3f8d74';
-        context.fillRect(0, groundScreenY - 14, SCREEN_WIDTH, 3);
+        const sourceHeight = Math.max(1, sourceBottom - sourceY);
+        const drawWidth = Math.ceil(
+            options.drawHeight * image.naturalWidth / sourceHeight,
+        );
+        const parallaxOffset = ((cameraX * options.speed) % drawWidth + drawWidth)
+            % drawWidth;
+        const groundScreenY = HUD_HEIGHT + getCurrentLevel().groundY;
+        const drawY = groundScreenY - options.drawHeight + options.groundOverlap;
 
-        context.globalAlpha = 0.68;
-        context.filter = 'grayscale(22%) saturate(72%) contrast(94%) brightness(96%)';
-        const lastVisibleCopy = Math.ceil(SCREEN_WIDTH / detailWidth) + 1;
+        context.save();
+        context.beginPath();
+        context.rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HUD_HEIGHT);
+        context.clip();
+        context.globalAlpha = options.alpha;
+        context.filter = options.filter;
+        const lastVisibleCopy = Math.ceil(SCREEN_WIDTH / drawWidth) + 1;
         for (let copyIndex = -1; copyIndex <= lastVisibleCopy; copyIndex += 1) {
             context.drawImage(
                 image,
@@ -1769,44 +1828,10 @@
                 sourceY,
                 image.naturalWidth,
                 sourceHeight,
-                copyIndex * detailWidth - parallaxOffset,
-                detailY,
-                detailWidth,
-                detailHeight,
-            );
-        }
-        context.restore();
-    }
-
-    function drawRepeatingParallaxImage(
-        image,
-        parallaxSpeed,
-        alpha,
-        filter,
-        verticalOffset = 0,
-        repeatGap = 0,
-    ) {
-        if (!image.complete || image.naturalWidth <= 0) return;
-
-        const drawHeight = SCREEN_HEIGHT - HUD_HEIGHT;
-        const drawWidth = Math.ceil(drawHeight * image.naturalWidth / image.naturalHeight);
-        const repeatPeriod = drawWidth + repeatGap;
-        const offset = ((cameraX * parallaxSpeed) % repeatPeriod + repeatPeriod) % repeatPeriod;
-        const drawY = HUD_HEIGHT + verticalOffset;
-
-        context.save();
-        context.beginPath();
-        context.rect(0, HUD_HEIGHT, SCREEN_WIDTH, drawHeight);
-        context.clip();
-        context.globalAlpha = alpha;
-        context.filter = filter;
-        for (let copyIndex = -1; copyIndex <= 2; copyIndex += 1) {
-            context.drawImage(
-                image,
-                copyIndex * repeatPeriod - offset,
+                copyIndex * drawWidth - parallaxOffset,
                 drawY,
                 drawWidth,
-                drawHeight,
+                options.drawHeight,
             );
         }
         context.restore();
@@ -3304,12 +3329,39 @@
     function drawMessage() {
         if (messageTime <= 0 || gameState !== 'playing') return;
         context.font = 'bold 8px monospace';
-        const width = context.measureText(message).width + 12;
-        const x = Math.round((SCREEN_WIDTH - width) / 2);
-        context.fillStyle = 'rgba(10, 12, 35, 0.86)';
-        context.fillRect(x, 34, width, 15);
+        const width = Math.min(SCREEN_WIDTH - 4, context.measureText(message).width + 12);
+        const playerScreenCenterX = player.x - cameraX + PLAYER_WIDTH / 2;
+        const x = Math.round(clamp(
+            playerScreenCenterX - width / 2,
+            2,
+            SCREEN_WIDTH - width - 2,
+        ));
+        // På jorden er der kun et smalt bånd under fødderne. Pladen klippes
+        // derfor til skærmens nederste kant, men dens pil bliver ved med at pege
+        // mod DEX. På platforme følger den naturligt med lige under figuren.
+        const desiredY = HUD_HEIGHT + player.y + PLAYER_HEIGHT + 2;
+        const y = Math.round(clamp(desiredY, HUD_HEIGHT + 2, SCREEN_HEIGHT - 17));
+        const pointerX = clamp(playerScreenCenterX, x + 7, x + width - 7);
+        const isHint = message.startsWith('HINT:');
+
+        context.save();
+        context.fillStyle = 'rgba(10, 12, 35, 0.92)';
+        context.fillRect(x, y, width, 15);
+        context.strokeStyle = isHint ? '#75efff' : '#ffd85b';
+        context.lineWidth = 1;
+        context.strokeRect(x + 0.5, y + 0.5, width - 1, 14);
+        context.fillStyle = context.strokeStyle;
+        context.beginPath();
+        context.moveTo(pointerX - 3, y);
+        context.lineTo(pointerX + 3, y);
+        context.lineTo(pointerX, y - 3);
+        context.closePath();
+        context.fill();
         context.fillStyle = '#ffffff';
-        context.fillText(message, x + 6, 38);
+        context.textAlign = 'center';
+        context.textBaseline = 'top';
+        context.fillText(message, x + width / 2, y + 4, width - 8);
+        context.restore();
     }
 
     function rectanglesOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
@@ -3412,6 +3464,7 @@
             cob: physiologyState ? physiologyState.cob : null,
             musicEnabled: audio.musicEnabled,
             soundEffectsEnabled: audio.effectsEnabled,
+            audioContextState: audio.context ? audio.context.state : 'not-created',
             remainingTimeSeconds,
             tirPercent: Math.round(getTIRFraction() * 100),
             cameraX,

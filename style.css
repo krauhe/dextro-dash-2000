@@ -109,14 +109,19 @@ body {
     transition: opacity 120ms linear;
 }
 
-/* Forsiden bruger separat key art. Den mørke toning holder det store logo
-   læsbart uden at skjule DEX og sammenstødet i billedets nederste del. */
+/* Den nye key art har bevidst et roligt felt i venstre side. Titel, styring og
+   startprompt bliver i dette felt, så ingen tekst længere dækker DEX eller
+   sammenstødet i billedets højre halvdel. */
 .game-overlay.title-screen {
     justify-content: flex-start;
+    align-items: flex-start;
     padding-top: 4.5%;
+    padding-left: 4%;
+    text-align: left;
     background:
-        linear-gradient(180deg, rgba(5, 2, 28, 0.72) 0%, rgba(13, 5, 43, 0.12) 47%, rgba(4, 2, 20, 0.28) 100%),
-        url("assets/title-splash.png") center center / cover no-repeat;
+        linear-gradient(90deg, rgba(5, 2, 28, 0.50) 0%, rgba(8, 3, 34, 0.25) 42%, transparent 65%),
+        linear-gradient(180deg, transparent 62%, rgba(4, 2, 20, 0.20) 100%),
+        url("assets/title-splash-v2.png") center center / cover no-repeat;
     backdrop-filter: none;
     isolation: isolate;
 }
@@ -151,13 +156,13 @@ body {
 }
 
 .game-overlay.title-screen h1 {
-    max-width: 96%;
+    max-width: 59%;
     color: transparent;
     background: linear-gradient(180deg, #fffef2 3%, #ffe86f 30%, #ff8b24 57%, #a51d8d 82%, #5b1b78 100%);
     background-clip: text;
     filter: drop-shadow(0 4px 0 #30105d) drop-shadow(0 8px 8px rgba(0, 0, 0, 0.78));
     font-family: Impact, Haettenschweiler, "Arial Black", sans-serif;
-    font-size: clamp(34px, 7.2vw, 82px);
+    font-size: clamp(30px, 5.5vw, 62px);
     font-style: italic;
     letter-spacing: 0.035em;
     -webkit-background-clip: text;
@@ -190,19 +195,65 @@ body {
     letter-spacing: 0.14em;
 }
 
-.title-screen .controls-line {
+.title-screen .title-keyboard-map {
     position: absolute;
-    bottom: 10%;
-    padding: 0.45em 0.8em;
+    top: 35%;
+    bottom: auto;
+    left: 4%;
+    display: flex;
+    align-items: flex-end;
+    gap: clamp(16px, 3vw, 34px);
+}
+
+.title-keyboard-map kbd {
+    display: grid;
+    width: clamp(25px, 4vw, 43px);
+    aspect-ratio: 1;
+    place-items: center;
+    border: 2px solid #b9ffff;
     border-radius: 7px;
-    background: rgba(9, 5, 35, 0.78);
-    box-shadow: 0 0 18px rgba(86, 27, 171, 0.48);
+    color: #f9ffff;
+    background: linear-gradient(145deg, rgba(70, 44, 137, 0.96), rgba(19, 12, 55, 0.96));
+    box-shadow:
+        0 4px 0 #211344,
+        inset 1px 1px 0 rgba(255, 255, 255, 0.24),
+        0 0 12px rgba(76, 242, 255, 0.25);
+    font: 700 clamp(13px, 2.2vw, 24px)/1 "Courier New", Consolas, monospace;
+    text-shadow: 1px 2px 0 #27164f;
+}
+
+.action-key-cluster {
+    display: grid;
+    gap: 7px;
+}
+
+.action-key-cluster .key-z {
+    margin-left: clamp(6px, 1vw, 11px);
+}
+
+.arrow-key-cluster {
+    display: grid;
+    gap: 7px;
+}
+
+.arrow-key-cluster .arrow-up {
+    justify-self: center;
+}
+
+.arrow-key-row {
+    display: flex;
+    gap: 6px;
 }
 
 .title-screen #overlayPrompt {
     position: absolute;
-    bottom: 3%;
+    top: 54%;
+    bottom: auto;
+    left: 4%;
+    max-width: 30%;
     color: #fff27e;
+    line-height: 1.45;
+    white-space: pre-line;
     text-shadow: 2px 2px 0 #5e155f, 0 0 12px #ff8d2b;
 }
 
@@ -230,7 +281,7 @@ body {
     line-height: 1.5;
 }
 
-.credits-screen .controls-line {
+.credits-screen .title-keyboard-map {
     display: none;
 }
 
@@ -285,11 +336,6 @@ body {
     font-variant-numeric: tabular-nums;
     line-height: 1.45;
     box-shadow: 0 0 18px rgba(74, 217, 255, 0.2);
-}
-
-.controls-line {
-    color: #bff8ff;
-    font-size: clamp(9px, 1.55vw, 19px) !important;
 }
 
 .blink {

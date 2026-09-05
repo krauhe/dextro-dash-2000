@@ -1,0 +1,75 @@
+﻿========================================
+PLAYWRIGHT TEST REPORT - 2026-09-05
+========================================
+
+Screenshots: docs/screenshots/
+
+Suites run:
+1. Title-screen composition and input prompt
+2. Web Audio unlock for title and attract mode
+3. Attract-mode transition to gameplay
+4. Stage 1 background and gameplay rendering
+5. Stage 2 background and gameplay rendering
+6. Browser console check
+
+----------------------------------------
+SUITE 1: TITLE SCREEN
+----------------------------------------
+
+## [OK] - DEX is the visual focus
+DEX is substantially larger than the cake monster. The title, controls and prompt remain in the deliberately quiet left side of the artwork.
+
+## [OK] - Stage shortcuts are not advertised
+The player-facing title screen and README controls omit the developer number-key shortcuts.
+
+----------------------------------------
+SUITE 2: ATTRACT AUDIO
+----------------------------------------
+
+## [OK] - Browser audio context unlocks
+Clicking the attract screen changed data-audio-state to running. The title, credits and demo use the same running music loop and have separate transition cues.
+
+## [NOTE] - Browser gesture is required
+Modern browsers block audible Web Audio before the first user gesture. The title screen therefore says CLICK: SOUND and keeps arrow keys as the game-start controls.
+
+----------------------------------------
+SUITE 3: BACKGROUND LAYERS
+----------------------------------------
+
+## [OK] - Opaque background has no repeated seam
+The non-seamless landscape is drawn once with enough horizontal overscan for the complete camera range instead of being tiled.
+
+## [OK] - Transparent layers are grounded
+The far and middle PNG layers are cropped to their actual motif bands and overlap the world ground line. No rectangular fill strip or straight alpha transition is rendered.
+
+## [OK] - Parallax order is preserved
+The base, far and middle layers use progressively faster camera factors. All remain behind platforms, pickups, enemies and DEX.
+
+----------------------------------------
+SUITE 4: GAMEPLAY AND CONSOLE
+----------------------------------------
+
+## [OK] - Stage 1 rendering
+Stage 1 ran in attract mode with DEX, a cake monster, platforms, pickups and the revised three-layer background visible.
+
+## [OK] - Stage 2 rendering
+Stage 2 started by the internal development shortcut and rendered the pump route without a layer cut or floating foreground strip.
+
+## [OK] - Console
+No browser error-level messages were recorded during title, credits, demo, stage 1 or stage 2 checks.
+
+----------------------------------------
+SUMMARY
+----------------------------------------
+
+Tests: 9
+PASS: 9
+FAIL: 0
+CRITICAL: 0
+WARNING: 0
+NOTE: 1
+
+STATUS OVERVIEW:
+FIXED: 4 requested areas
+OPEN: 0 verified defects
+PARTIAL: 0

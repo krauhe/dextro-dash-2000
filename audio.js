@@ -248,6 +248,28 @@ class GlucoseRunnerAudio {
         this.noise(0.055, 0.032);
     }
 
+    attractTitle() {
+        // Kort, bred velkomstakkord. Den afspilles først efter en brugerklik,
+        // fordi browsere med vilje blokerer automatisk lyd før første input.
+        [57, 64, 69, 76].forEach((note, index) => {
+            this.tone(note, 0.48, index < 2 ? 'triangle' : 'square', 0.034,
+                index * 0.045);
+        });
+        this.sweep(150, 420, 0.28, 'sine', 0.026, 0.12);
+    }
+
+    attractCredits() {
+        [76, 72, 69].forEach((note, index) => {
+            this.tone(note, 0.22, 'triangle', 0.038, index * 0.11);
+        });
+    }
+
+    demoStart() {
+        [64, 69, 72, 76].forEach((note, index) => {
+            this.tone(note, 0.13, 'square', 0.040, index * 0.065);
+        });
+    }
+
     hurt() {
         this.tone(58, 0.08, 'sawtooth', 0.08);
         this.tone(48, 0.15, 'sawtooth', 0.07, 0.07);
