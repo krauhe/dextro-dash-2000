@@ -20,3 +20,16 @@ imports/exports, AI features or public claims, read
 
 These guardrails supplement the user's instructions; they are not a regulatory
 determination or a replacement for qualified assessment.
+
+## Artwork background removal
+
+The user has explicitly authorised code-based background removal for generated
+artwork, including baked checkerboards. Do not ask again for that cleanup.
+Preserve opaque foreground details such as white eyes and egg shells; inspect
+the final RGBA cutout on a dark background before using it in the game.
+
+## Campaign source
+
+`campaign.js` is the active ten-stage data source for the game, generator and
+level workshop. The old `level-01.js` and `level-02.js` are not loaded by the app.
+Do not edit those old definitions when changing the active campaign.

@@ -20,6 +20,7 @@
     const musicToggle = document.getElementById('musicToggle');
     const soundToggle = document.getElementById('soundToggle');
     const gameHint = document.getElementById('gameHint');
+    const hintPanel = document.getElementById('hintPanel');
 
     // 200 logiske højdepixels bevarer banernes fysik. Den bredere 16:9-visning
     // viser mere af banen uden at strække figurer eller ændre springlængder.
@@ -102,6 +103,7 @@
     // madvare tilføjes, skal hele dens makroprofil derfor defineres her i stedet
     // for blot at sende kulhydrat til fysiologimotoren.
     const FOOD_MONSTER_PROFILES = {
+        ...DEXTRO_NEW_FOODS,
         cake: {
             name: 'CRUMBLER',
             stompMessage: 'CRUMBLER CRUSH!',
@@ -137,7 +139,7 @@
             },
         },
         pizza: {
-            name: 'PIZZA MONSTER',
+            name: 'PIZZA LADY',
             stompMessage: 'PIZZA SMASH!',
             stompPoints: 400,
             // 100 g pepperonipizza med almindelig bund. Fedt og protein sendes
@@ -165,6 +167,10 @@
 
     const backgroundImage = new Image();
     backgroundImage.src = 'assets/retro-landscape.png';
+    const biomeImages = {};
+    for (const [key, theme] of Object.entries(DEXTRO_THEMES)) {
+        if (theme.background) { biomeImages[key] = new Image(); biomeImages[key].src = theme.background; }
+    }
 
     // Ét færdigt, sammenhængende PNG-lag leverer hele mellemlandskabet. Dets
     // alfakanal følger den tegnede junglesilhuet; der bruges ingen efterfølgende
@@ -219,12 +225,62 @@
     characterImages.cake.src = 'assets/cake-monster.png';
     characterImages.soda.src = 'assets/soda-monster.png';
     characterImages.pizza.src = 'assets/pizza-monster.png?v=2';
+    for (const type of ['apple','egg','banana','avocado','burger','pizza']) {
+        characterImages[type] = new Image();
+        characterImages[type].src = `assets/food-${type}.png`;
+    }
 
     const audio = new GlucoseRunnerAudio();
-    const levels = [GLUCOSE_RUNNER_LEVEL_01, GLUCOSE_RUNNER_LEVEL_02];
+    const levels = DEXTRO_CAMPAIGN;
     const keys = { left: false, right: false };
     const MUSIC_STORAGE_KEY = 'dextro-dash-2000-music';
     const SOUND_STORAGE_KEY = 'dextro-dash-2000-effects';
+    const TUTORIAL_STORAGE_KEY = 'dextro-dash-2000-tutorial';
+    const tutorialToggle = document.getElementById('tutorialToggle');
+    const continueHint = document.getElementById('continueHint');
+    let tutorialEnabled = true;
+    const discoveredTutorials = new Set();
+    const playKeyboardMap = document.getElementById('playKeyboardMap');
+    playKeyboardMap.innerHTML = document.getElementById('titleKeyboardMap').innerHTML;
+    // Hjælpeskitsen har sin egen realtidstæller og aktiverer ikke slowmotion.
+    // Tre relevante opsamlinger tælles samlet pr. nyt spil, ikke pr. liv/bane.
+    let keyboardIntroWaiting = false;
+    let keyboardIntroSeconds = 0;
+    let keyboardActionSeconds = 0;
+    let keyboardActionPickups = 0;
+
+    function noteKeyboardMovement(key) {
+        if (keyboardIntroWaiting && gameState === 'playing' && !demoMode
+            && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown', ' '].includes(key)) {
+            keyboardIntroWaiting = false;
+            keyboardIntroSeconds = 3;
+        }
+    }
+
+    function remindActionKeys() {
+        if (!tutorialEnabled || demoMode || keyboardActionPickups >= 3) return;
+        keyboardActionPickups += 1;
+        keyboardActionSeconds = 6;
+    }
+
+    function updateKeyboardSketch(deltaSeconds) {
+        if (gameState !== 'playing' || demoMode || !tutorialEnabled) return;
+        // Fasthold skitsen under læsetips, så slowmotion-panelet ikke bruger
+        // hele visningstiden. Tællerne bruger ellers uændret realtid.
+        if (activeHint) return;
+        keyboardIntroSeconds = Math.max(0, keyboardIntroSeconds - deltaSeconds);
+        keyboardActionSeconds = Math.max(0, keyboardActionSeconds - deltaSeconds);
+    }
+
+    function drawKeyboardSketch() {
+        const intro = currentLevelIndex === 0 && (keyboardIntroWaiting || keyboardIntroSeconds > 0);
+        const visible = gameState === 'playing' && !demoMode && tutorialEnabled
+            && (intro || keyboardActionSeconds > 0);
+        playKeyboardMap.hidden = !visible;
+        playKeyboardMap.classList.toggle('actions-only', !intro);
+        playKeyboardMap.setAttribute('aria-label', intro
+            ? 'Keyboard controls: A, Z and arrow keys' : 'Action keys: A and Z');
+    }
 
     let gameState = 'title';
     let attractPhase = 'title';
@@ -275,6 +331,9 @@
     let tailSegments = [];
     let hudPickupFlights = [];
     let stageClearTally = null;
+    let platforms = [];
+    let cacheBlocks = [];
+    let stageCues = [];
 
     const player = {
         x: PLAYER_START_X,
@@ -332,6 +391,9 @@
 
     function copyLevelObjects() {
         const level = getCurrentLevel();
+        platforms = level.platforms.map(p => ({...p, crumbleTime:null, collapsed:false, recoverTime:0}));
+        cacheBlocks = (level.blocks || []).map(b => ({...b, solid:true, used:false, bumpTime:0}));
+        stageCues = (level.tutorialCues || []).map(c => ({...c, triggered:false}));
         items = level.items.map((item) => ({ ...item, collected: false }));
         diamonds = level.diamonds.map(([x, y]) => ({ x, y, collected: false }));
         enemies = level.enemies.map((enemy, index) => ({
@@ -355,6 +417,8 @@
                 : 0,
             cheeseWindupTime: 0,
             cheeseThrowCycleIndex: 0,
+            eggState: enemy.eggDrop ? 'perched' : 'idle', eggTimer:0,
+            eggHomeX:enemy.x, eggHomeY:enemy.y-8, eggRotation:0, eggVelocityY:0,
         }));
     }
 
@@ -376,7 +440,8 @@
             pumpHintShown = false;
             autoPumpHintShown = false;
         }
-        remainingTimeSeconds = LEVEL_TIME_SECONDS;
+        remainingTimeSeconds = getCurrentLevel().timeSeconds || LEVEL_TIME_SECONDS;
+        audio.setTheme(DEXTRO_THEMES[getCurrentLevel().theme || 'orchard'].music);
         bgAlarmZone = 'normal';
         bgAlarmCooldownSeconds = 0;
         activeHint = null;
@@ -531,6 +596,10 @@
         currentLevelIndex = clamp(levelIndex, 0, levels.length - 1);
         resetRun();
         gameState = 'playing';
+        keyboardIntroWaiting = currentLevelIndex === 0 && tutorialEnabled;
+        keyboardIntroSeconds = 0;
+        keyboardActionSeconds = 0;
+        keyboardActionPickups = 0;
         hideOverlay();
         canvas.focus();
         announce(`Stage ${currentLevelIndex + 1} started`);
@@ -541,6 +610,9 @@
         demoBadge.classList.add('hidden');
         demoBadge.setAttribute('aria-hidden', 'true');
         currentLevelIndex += 1;
+        keyboardIntroWaiting = false;
+        keyboardIntroSeconds = 0;
+        keyboardActionSeconds = 0;
         collectedDiamondCount = 0;
         resetRun({ keepScore: true, keepLives: true, keepDiscoveries: true });
         gameState = 'playing';
@@ -656,7 +728,7 @@
             && enemy.x > player.x
             && enemy.x - player.x < 42
         ));
-        const supportingPlatform = getCurrentLevel().platforms.find((platform) => (
+        const supportingPlatform = platforms.filter(platform => !platform.collapsed).find((platform) => (
             player.x + PLAYER_WIDTH / 2 >= platform.x
             && player.x + PLAYER_WIDTH / 2 <= platform.x + platform.width
             && Math.abs(player.y + PLAYER_HEIGHT - platform.y) < 5
@@ -853,6 +925,7 @@
 
     function setMessage(text, duration) {
         if (text.startsWith('HINT:')) {
+            if (!tutorialEnabled || demoMode) return;
             const hint = { text: text.replace(/^HINT:\s*/, ''), remaining: Math.max(12, duration) };
             if (!activeHint) activeHint = hint;
             else hintQueue.push(hint);
@@ -872,6 +945,31 @@
         if (!activeHint) return;
         activeHint.remaining -= deltaSeconds;
         if (activeHint.remaining <= 0) activeHint = hintQueue.shift() || null;
+    }
+
+    function setTutorialEnabled(enabled, persist = true) {
+        tutorialEnabled = Boolean(enabled);
+        tutorialToggle.textContent = `TUTORIAL: ${tutorialEnabled ? 'ON' : 'OFF'}`;
+        tutorialToggle.setAttribute('aria-pressed', String(tutorialEnabled));
+        if (!tutorialEnabled) {
+            activeHint = null; hintQueue = [];
+            keyboardIntroWaiting = false; keyboardIntroSeconds = 0; keyboardActionSeconds = 0;
+        }
+        drawKeyboardSketch();
+        if (persist) {
+            try { window.localStorage.setItem(TUTORIAL_STORAGE_KEY, tutorialEnabled ? 'on' : 'off'); } catch (_) { /* Privat tilstand kan afvise lagring. */ }
+        }
+    }
+
+    function updateTutorialCues() {
+        if (!tutorialEnabled || demoMode) return;
+        for (const cue of stageCues) {
+            if (cue.triggered || player.x < cue.x) continue;
+            cue.triggered = true;
+            if (discoveredTutorials.has(cue.id)) continue;
+            discoveredTutorials.add(cue.id);
+            setMessage(`HINT: ${cue.text}`, 12);
+        }
     }
 
     function loseLife(reason, ignoreInvulnerability = false) {
@@ -1055,7 +1153,7 @@
 
     function handleKeyDown(event) {
         const key = event.key.toLowerCase();
-        const selectedLevelIndex = Number.parseInt(key, 10) - 1;
+        const selectedLevelIndex = key === '0' ? 9 : Number.parseInt(key, 10) - 1;
         const isLevelShortcut = Number.isInteger(selectedLevelIndex)
             && selectedLevelIndex >= 0
             && selectedLevelIndex < levels.length;
@@ -1079,6 +1177,7 @@
             keys.left = key === 'arrowleft';
             keys.right = key === 'arrowright';
             if (key === 'arrowup' || key === ' ') jump();
+            noteKeyboardMovement(key);
             return;
         }
 
@@ -1114,10 +1213,15 @@
             // Pil op starter banen med et hop. Venstre og højre er allerede sat
             // i keys ovenfor, så figuren løber straks i den valgte retning.
             if (key === 'arrowup') jump();
+            noteKeyboardMovement(key);
             return;
         }
 
+        noteKeyboardMovement(key);
         if (event.repeat) return;
+        if (key === 'enter' && activeHint) {
+            event.preventDefault(); activeHint = hintQueue.shift() || null; return;
+        }
         if (key === 'm') {
             toggleMusic();
             return;
@@ -1163,6 +1267,8 @@
         toggleSound();
         canvas.focus();
     });
+    tutorialToggle.addEventListener('click', () => { setTutorialEnabled(!tutorialEnabled); canvas.focus(); });
+    continueHint.addEventListener('click', () => { activeHint = hintQueue.shift() || null; canvas.focus(); });
 
     function update(deltaSeconds) {
         if (gameState === 'title') {
@@ -1185,6 +1291,13 @@
             if (gameState !== 'playing') return;
         }
 
+        updateTutorialCues();
+        updateKeyboardSketch(deltaSeconds);
+        // Tipsets læsetid følger væguret. Hele spilverdenen, inklusive BG,
+        // projektiler, faldende gulve og tidsbonus, bruger samme slowmotion.
+        const tutorialSlow = tutorialEnabled && !demoMode && activeHint;
+        updateHints(deltaSeconds);
+        if (tutorialSlow) deltaSeconds *= 0.06;
         elapsedRealSeconds += deltaSeconds;
         remainingTimeSeconds = Math.max(0, remainingTimeSeconds - deltaSeconds);
         if (remainingTimeSeconds <= 0) {
@@ -1197,8 +1310,7 @@
         player.insulinUseTime = Math.max(0, player.insulinUseTime - deltaSeconds);
         player.invulnerableTime = Math.max(0, player.invulnerableTime - deltaSeconds);
         messageTime = Math.max(0, messageTime - deltaSeconds);
-        updateHints(deltaSeconds);
-
+        updateStageObstacles(deltaSeconds);
         updatePlayer(deltaSeconds);
         updatePlayerTail(deltaSeconds);
         updateEnemies(deltaSeconds);
@@ -1211,7 +1323,7 @@
         updateCamera();
 
         if (player.y > SCREEN_HEIGHT - HUD_HEIGHT - 8) {
-            loseLife('FELL INTO A PIT', true);
+            loseLife(DEXTRO_THEMES[getCurrentLevel().theme || 'orchard'].lava ? 'FELL INTO LAVA' : 'FELL INTO A PIT', true);
         }
         if (player.x >= getCurrentLevel().finishX) winLevel();
     }
@@ -1245,7 +1357,9 @@
         // resterende hastighed også uden at fjerne momentum helt.
         player.vx = clamp(player.vx, -currentMaxRunSpeed, currentMaxRunSpeed);
 
+        const previousX = player.x;
         player.x += player.vx * deltaSeconds;
+        resolveSolidSides(previousX);
         // Kameraets venstre kant må ikke fungere som en usynlig mur. Figuren
         // kan gå tilbage gennem hele den allerede besøgte bane, men aldrig
         // længere til venstre end sit oprindelige startpunkt.
@@ -1270,16 +1384,72 @@
         const previousBottom = player.previousY + PLAYER_HEIGHT;
         const currentBottom = player.y + PLAYER_HEIGHT;
 
-        for (const platform of getCurrentLevel().platforms) {
+        for (const platform of [...platforms, ...cacheBlocks]) {
+            if (platform.collapsed) continue;
             const horizontalOverlap = player.x + PLAYER_WIDTH > platform.x + 1
                 && player.x < platform.x + platform.width - 1;
             const crossedTop = previousBottom <= platform.y + 2 && currentBottom >= platform.y;
+            if (platform.solid && horizontalOverlap && player.vy < 0
+                && player.previousY >= platform.y + platform.height
+                && player.y <= platform.y + platform.height) {
+                player.y = platform.y + platform.height;
+                player.vy = 0;
+                player.jumpCanBeShortened = false;
+                if ('reward' in platform) hitCacheBlock(platform);
+                return;
+            }
             if (horizontalOverlap && crossedTop && player.vy >= 0) {
                 player.y = platform.y - PLAYER_HEIGHT;
                 player.vy = 0;
                 player.onGround = true;
                 player.jumpCanBeShortened = false;
+                if (platform.crumble && platform.crumbleTime === null) platform.crumbleTime = 1.1;
                 return;
+            }
+        }
+    }
+
+    function resolveSolidSides(previousX) {
+        for (const wall of [...platforms, ...cacheBlocks]) {
+            if (!wall.solid || wall.collapsed || player.y + PLAYER_HEIGHT <= wall.y + 0.1
+                || player.y >= wall.y + wall.height - 0.1) continue;
+            if (previousX + PLAYER_WIDTH <= wall.x && player.x + PLAYER_WIDTH > wall.x) {
+                player.x = wall.x - PLAYER_WIDTH; player.vx = 0;
+            } else if (previousX >= wall.x + wall.width && player.x < wall.x + wall.width) {
+                player.x = wall.x + wall.width; player.vx = 0;
+            }
+        }
+    }
+
+    function hitCacheBlock(block) {
+        if (block.used) return;
+        block.used = true; block.bumpTime = 0.2;
+        audio.pickup();
+        if (block.reward === 'diamonds') {
+            collectedDiamondCount += 5;
+            spawnScoreParticle(block.x+9,block.y,5*POINTS_PER_DIAMOND,' BONUS');
+        } else {
+            // Genstanden springer ud ovenpå kassen og skal stadig samles op.
+            items.push({type:block.reward,x:block.x+9,y:block.y-12,collected:false});
+        }
+        spawnParticles(block.x+9,block.y,'#baecff',12);
+    }
+
+    function updateStageObstacles(dt) {
+        for (const block of cacheBlocks) block.bumpTime = Math.max(0,block.bumpTime-dt);
+        for (const p of platforms) {
+            if (!p.crumble) continue;
+            if (p.collapsed) {
+                p.recoverTime -= dt;
+                if (p.recoverTime <= 0 && !rectanglesOverlap(player.x,player.y,PLAYER_WIDTH,PLAYER_HEIGHT,p.x,p.y,p.width,p.height)) {
+                    p.collapsed=false; p.crumbleTime=null;
+                }
+            } else if (p.crumbleTime !== null) {
+                p.crumbleTime -= dt;
+                if (p.crumbleTime <= 0) {
+                    p.collapsed=true; p.recoverTime=5;
+                    spawnParticles(p.x+p.width/2,p.y,'#aa988a',16);
+                }
             }
         }
     }
@@ -1297,15 +1467,22 @@
 
             updateFizzState(enemy, enemyIndex, deltaSeconds);
             updatePizzaThrowState(enemy, enemyIndex, deltaSeconds);
+            updateEggState(enemy, deltaSeconds);
 
             // En rystende Fizzler og et Pizza Monster i kasteoptræk står stille.
             // Spilleren kan derfor aflæse begge angreb før kontaktøjeblikket.
             const enemySpeedFactor = enemy.fizzState === 'shaking'
-                || enemy.cheeseWindupTime > 0
+                || enemy.cheeseWindupTime > 0 || enemy.eggDrop
                 ? 0
                 : 1;
             enemy.x += enemy.speed * enemy.direction * enemySpeedFactor * deltaSeconds;
-            if (enemy.x <= enemy.minX || enemy.x + enemy.width >= enemy.maxX) {
+            // Stillestående monstre kan være placeret præcis ved minX.
+            // De må ikke spejlvendes hver frame. Gående monstre vender kun
+            // ved den kant, de bevæger sig imod, ikke den de netop forlod.
+            const reachedPatrolEdge = enemy.direction < 0
+                ? enemy.x <= enemy.minX
+                : enemy.x + enemy.width >= enemy.maxX;
+            if (enemy.speed > 0 && enemySpeedFactor > 0 && reachedPatrolEdge) {
                 enemy.direction *= -1;
                 enemy.x = clamp(enemy.x, enemy.minX, enemy.maxX - enemy.width);
             }
@@ -1329,6 +1506,10 @@
 
             if (!rectanglesOverlap(player.x, player.y, PLAYER_WIDTH, PLAYER_HEIGHT,
                 enemy.x, enemy.y, enemy.width, enemy.height)) continue;
+
+            if (enemy.type === 'egg' && ['falling','rolling'].includes(enemy.eggState)) {
+                loseLife('HIT BY A ROLLING EGG', true); continue;
+            }
 
             const previousBottom = player.previousY + PLAYER_HEIGHT;
             if (player.vy > 0 && previousBottom <= enemy.y + 7) {
@@ -1384,6 +1565,28 @@
         }
     }
 
+    function updateEggState(enemy, dt) {
+        if (!enemy.eggDrop) return;
+        enemy.eggTimer -= dt;
+        if (enemy.eggState === 'perched' && Math.abs(player.x-enemy.x)<145) {
+            enemy.eggState='warning'; enemy.eggTimer=1.4;
+            enemy.direction=player.x<enemy.x?-1:1;
+        } else if (enemy.eggState === 'warning' && enemy.eggTimer<=0) {
+            enemy.eggState='falling'; enemy.eggVelocityY=0;
+        } else if (enemy.eggState === 'falling') {
+            enemy.x += enemy.direction*18*dt;
+            enemy.eggVelocityY += 220*dt; enemy.y += enemy.eggVelocityY*dt;
+            enemy.eggRotation += dt*3;
+            if(enemy.y+enemy.height>=getCurrentLevel().groundY) {
+                enemy.y=getCurrentLevel().groundY-enemy.height;
+                enemy.eggState='rolling'; enemy.eggTimer=2.6;
+            }
+        } else if (enemy.eggState === 'rolling') {
+            enemy.x += enemy.direction*65*dt; enemy.eggRotation += enemy.direction*dt*6;
+            if (enemy.eggTimer<=0) { enemy.eggState='resting'; enemy.eggRotation=0; }
+        }
+    }
+
     function updateFizzState(enemy, enemyIndex, deltaSeconds) {
         if (enemy.type !== 'soda') return;
 
@@ -1409,6 +1612,9 @@
 
     function updatePizzaThrowState(enemy, enemyIndex, deltaSeconds) {
         if (enemy.type !== 'pizza') return;
+        // Senere pizzamøder må ikke bombardere starten fra flere skærme væk.
+        // Et allerede varslet kast færdiggøres stadig mod det låste mål.
+        if (enemy.cheeseWindupTime <= 0 && Math.abs(enemy.x-player.x)>190) return;
 
         if (enemy.cheeseWindupTime > 0) {
             enemy.cheeseWindupTime = Math.max(
@@ -1518,8 +1724,8 @@
 
         const monsterProfile = FOOD_MONSTER_PROFILES[enemy.type];
         const referenceNutrition = monsterProfile.referenceNutrition;
-        const portionCarbs = enemy.carbs ?? referenceNutrition.carbs;
-        const portionScale = portionCarbs / referenceNutrition.carbs;
+        const portionScale = enemy.portionScale ?? (enemy.carbs === undefined ? 1 : enemy.carbs / referenceNutrition.carbs);
+        const portionCarbs = referenceNutrition.carbs * portionScale;
         physiologyEngine.addFood({
             carbs: portionCarbs,
             protein: referenceNutrition.protein * portionScale,
@@ -1540,6 +1746,16 @@
             10,
         );
         audio.eat();
+        spawnMacroParticles(enemy.x+11,enemy.y,{carbs:portionCarbs,
+            protein:referenceNutrition.protein*portionScale,fat:referenceNutrition.fat*portionScale});
+    }
+
+    function spawnMacroParticles(x,y,values) {
+        Object.entries(values).forEach(([key,value],index) => {
+            if (value < 0.05) return;
+            particles.push({kind:'macro',text:`${value.toFixed(1).replace(/\.0$/,'')}g ${key.toUpperCase()}`,
+                x,y:y-index*7,vx:7,vy:-12,gravity:0,life:2,maximumLife:2,color:DEXTRO_MACRO_COLORS[key]});
+        });
     }
 
     function collectObjects() {
@@ -1549,7 +1765,11 @@
 
             item.collected = true;
             score += 100;
-            if (item.type === 'autoPump') {
+            if (item.type === 'sugarCane') {
+                physiologyEngine.addFood({carbs:12,protein:0,fat:0,weight:12,eatTimeMin:0.4,
+                    carbParams:{simpleFraction:1,fiberPerGram:0,retentionFactor:0.4}});
+                player.candyUseTime=0.8; spawnMacroParticles(item.x,item.y,{carbs:12}); audio.candy();
+            } else if (item.type === 'autoPump') {
                 startHUDPickupFlight('autoPump', item.x, item.y, 123, 23);
                 pumpActive = true;
                 autoPumpActive = true;
@@ -1558,7 +1778,7 @@
                 // Auto-pumpen er en opgradering. Eventuelle doser i den
                 // manuelle pumpe flyttes med over i rygsækkens tre pladser.
                 if (!autoPumpHintShown) {
-                    setMessage('HINT: AUTO PUMP: Stores 3 pens and gives DEX insulin automatically.\nWhen full, extra pens are used immediately!', 12);
+                    setMessage('HINT: AUTO PUMP\nStores 3 pens. Uses stored insulin automatically.\nExtra pens are used on contact when full.', 12);
                     autoPumpHintShown = true;
                 } else {
                     setMessage('AUTO PUMP READY', 0.9);
@@ -1576,8 +1796,9 @@
                 startHUDPickupFlight('pump', item.x, item.y, 123, 23);
                 pumpActive = true;
                 pumpHUDUnlocked = true;
+                remindActionKeys();
                 if (!pumpHintShown) {
-                    setMessage('HINT: MANUAL PUMP: Stores 3 pens for later. Press "Z": DEX uses one dose.\nWhen full, extra pens are used immediately!', 12);
+                    setMessage('HINT: MANUAL PUMP\nStores 3 pens. Press "Z" to use stored insulin.\nExtra pens are used on contact when full.', 12);
                     pumpHintShown = true;
                 } else {
                     setMessage('PUMP READY', 0.8);
@@ -1596,6 +1817,7 @@
                     true,
                 );
                 pumpInsulinStored += 1;
+                if (!autoPumpActive) remindActionKeys();
                 setMessage(`PUMP ${pumpInsulinStored}/3`, 0.7);
                 spawnParticles(item.x, item.y, '#79efff');
                 audio.pickup();
@@ -1609,9 +1831,10 @@
             } else {
                 startHUDPickupFlight('candy', item.x, item.y, 123, 8, true);
                 candyStock += 1;
+                remindActionKeys();
                 candyHUDUnlocked = true;
                 if (!candyHintShown) {
-                    setMessage('HINT: Press "A": DEX eats one stored candy.\nCandy raises DEX\'s blood sugar; collecting it only stores it.', 12);
+                    setMessage('HINT: CANDY COLLECTED\nPress "A" to eat a stored candy.', 12);
                     candyHintShown = true;
                 } else {
                     setMessage('+1 CANDY', 0.65);
@@ -1836,9 +2059,17 @@
     function drawBackground() {
         context.fillStyle = '#26245e';
         context.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-        drawOverscannedBaseBackground();
-
-        drawMiddleGroundLayer();
+        const biome=biomeImages[getCurrentLevel().theme];
+        if (biome && biome.complete && biome.naturalWidth>0) {
+            // Ét ubrudt, opakt højopløst billede. Overscan undgår flisesamlinger.
+            const travel=Math.max(0,getCurrentLevel().width-SCREEN_WIDTH)*0.018;
+            const width=SCREEN_WIDTH+travel;
+            const height=Math.max(SCREEN_HEIGHT-HUD_HEIGHT,width*biome.naturalHeight/biome.naturalWidth);
+            context.drawImage(biome,-cameraX*0.018,SCREEN_HEIGHT-height,width,height);
+        } else {
+            drawOverscannedBaseBackground();
+            drawMiddleGroundLayer();
+        }
     }
 
     function drawOverscannedBaseBackground() {
@@ -1906,11 +2137,13 @@
         // Afgrundene starter ved den synlige jordkant. Tegn kun i hullerne,
         // før platformene, så markeringen hverken lander under canvas eller
         // mørklægger de solide jordstykker.
-        const ground = getCurrentLevel().platforms
+        const ground = platforms
+            .filter(platform => !platform.collapsed)
             .filter(platform => platform.y === getCurrentLevel().groundY)
             .slice().sort((a, b) => a.x - b.x);
         let groundEnd = 0;
-        context.fillStyle = '#0b1024';
+        const theme=DEXTRO_THEMES[getCurrentLevel().theme || 'orchard'];
+        context.fillStyle = theme.lava ? '#ed6329' : '#0b1024';
         for (const platform of ground) {
             if (platform.x > groundEnd) {
                 context.fillRect(groundEnd, getCurrentLevel().groundY,
@@ -1918,14 +2151,31 @@
             }
             groundEnd = Math.max(groundEnd, platform.x + platform.width);
         }
-        for (const platform of getCurrentLevel().platforms) {
+        for (const platform of platforms) {
+            if (platform.collapsed) continue;
             drawEarthPlatform(platform);
+            if(platform.crumble) {
+                context.strokeStyle=platform.crumbleTime===null?'#e7cf9f':'#ff906b';
+                context.lineWidth=1;
+                context.beginPath();context.moveTo(platform.x+8,platform.y+1);
+                context.lineTo(platform.x+15,platform.y+5);context.lineTo(platform.x+11,platform.y+8);
+                context.lineTo(platform.x+22,platform.y+12);context.stroke();
+            }
         }
-
+        context.save();
+        for(const block of cacheBlocks) {
+            const y=block.y-Math.sin(block.bumpTime/0.2*Math.PI)*2;
+            context.fillStyle=block.used?'#434252':'#284354';context.fillRect(block.x,y,block.width,block.height);
+            context.strokeStyle=block.used?'#747585':'#85efff';context.lineWidth=0.8;context.strokeRect(block.x+1,y+1,block.width-2,block.height-2);
+            context.fillStyle='#b5f7ff';context.font='bold 7px monospace';context.textAlign='center';
+            context.fillText(block.used?'·':block.reward==='diamonds'?'◆':block.reward==='candy'?'A':'Z',block.x+9,y+11);
+        }
+        context.restore();
     }
 
     function drawEarthPlatform(platform) {
         const { x, y, width, height } = platform;
+        const theme=DEXTRO_THEMES[getCurrentLevel().theme || 'orchard'];
         if (x + width < cameraX || x > cameraX + SCREEN_WIDTH) return;
         context.save();
         // Alt bliver inde i kollisionsrektanglet. Ingen rødder eller tekstur
@@ -1934,9 +2184,9 @@
         context.rect(x, y, width, height);
         context.clip();
         const soil = context.createLinearGradient(0, y, 0, y + height);
-        soil.addColorStop(0, '#75523c');
-        soil.addColorStop(0.4, '#533a32');
-        soil.addColorStop(1, '#292936');
+        soil.addColorStop(0, theme.soil[0]);
+        soil.addColorStop(0.4, theme.soil[1]);
+        soil.addColorStop(1, theme.soil[2]);
         context.fillStyle = soil;
         context.fillRect(x, y, width, height);
 
@@ -1948,11 +2198,11 @@
             const tx = x + tile * 12;
             const seed = Math.abs(Math.sin(tile * 12.9898 + x * 0.17 + y) * 43758.5453) % 1;
             // Ujævn moskant under en ubrudt, let aflæselig landingsoverflade.
-            context.fillStyle = '#246149';
+            context.fillStyle = theme.soil[1];
             context.fillRect(tx, y + 2, 12, 2 + seed * 2);
-            context.fillStyle = '#399453';
+            context.fillStyle = theme.top;
             context.fillRect(tx + 1, y + 2, 3 + seed * 4, 2);
-            context.strokeStyle = '#a58254';
+            context.strokeStyle = theme.detail;
             context.lineWidth = 0.45;
             context.beginPath();
             context.moveTo(tx + 4, y + 4);
@@ -1979,9 +2229,9 @@
                 context.fillRect(tx + 1 + seed * 2, sy + 1, 0.9, 0.7);
             }
         }
-        context.fillStyle = '#56bd66';
+        context.fillStyle = theme.top;
         context.fillRect(x, y, width, 2);
-        context.fillStyle = '#adeda0';
+        context.fillStyle = theme.trim;
         context.fillRect(x, y, width, 0.65);
         // Diskrete side- og bundskygger gør også de tynde svæveplatforme solide.
         context.fillStyle = 'rgba(13, 20, 25, 0.35)';
@@ -2097,6 +2347,14 @@
     }
 
     function drawPickup(type, x, y, size, showGlow) {
+        if(type==='sugarCane') {
+            context.save(); context.translate(x,y); context.rotate(-0.2);
+            context.lineWidth=3.6; context.strokeStyle='#fff7ef';context.lineCap='round';
+            context.beginPath();context.moveTo(2,9);context.lineTo(2,-5);context.arc(-2,-5,4,0,Math.PI,true);context.stroke();
+            context.strokeStyle='#ec3e5c';context.lineWidth=1.8;
+            for(let k=-4;k<9;k+=4) {context.beginPath();context.moveTo(0.5,k);context.lineTo(3.5,k+1.5);context.stroke();}
+            context.restore(); return;
+        }
         const image = pickupImages[type];
         const halfSize = Math.round(size / 2);
         const pumpPickup = type === 'pump' || type === 'autoPump';
@@ -2262,12 +2520,16 @@
                         ? Math.sin(elapsedRealSeconds * 51 + enemyIndex) * 0.055
                         : 0;
                     context.save();
+                    if (enemy.eggState==='warning') {
+                        context.fillStyle='#ffd664';context.font='bold 9px monospace';
+                        context.fillText('!',centerX,bottomY-spriteSize-3);
+                    }
                     context.translate(
                         centerX + shakeX - enemy.direction * throwProgress * 1.4,
                         bottomY - pose.lift + shakeY,
                     );
                     context.rotate(
-                        pose.rotation * enemy.direction
+                        (enemy.eggState==='warning'?Math.sin(elapsedRealSeconds*35)*0.12:pose.rotation * enemy.direction) + (enemy.eggRotation || 0)
                         + shakeRotation
                         - enemy.direction * Math.sin(throwProgress * Math.PI) * 0.11,
                     );
@@ -2282,7 +2544,7 @@
                         spriteSize,
                         enemy.type,
                         elapsedRealSeconds * 10 + enemyIndex * 1.7,
-                        !isShaking && !isThrowingCheese,
+                        !isShaking && !isThrowingCheese && !enemy.eggDrop && enemy.speed>0,
                     );
                     context.restore();
                     drawFizzStateEffect(enemy, centerX, bottomY, spriteSize, enemyIndex);
@@ -2344,11 +2606,9 @@
         // Kroppen tegnes bagefter og skjuler samlingen ved hofterne.
         const sourceWidth = image.naturalWidth;
         const sourceHeight = image.naturalHeight;
-        const legStartFraction = enemyType === 'pizza'
-            ? 0.63
+        const legStartFraction = ['banana','pizza'].includes(enemyType) ? 0.81
             : enemyType === 'soda' ? 0.65 : 0.67;
-        const bodyEndFraction = enemyType === 'pizza'
-            ? 0.74
+        const bodyEndFraction = ['banana','pizza'].includes(enemyType) ? 0.82
             : enemyType === 'soda' ? 0.74 : 0.77;
         const legSourceY = Math.round(sourceHeight * legStartFraction);
         const legSourceHeight = sourceHeight - legSourceY;
@@ -3561,9 +3821,12 @@
     }
 
     function drawMessage() {
+        drawKeyboardSketch();
         const hintText = gameState === 'playing' && activeHint ? activeHint.text : '';
         if (gameHint.textContent !== hintText) gameHint.textContent = hintText;
         gameHint.hidden = !hintText;
+        hintPanel.hidden = !hintText;
+        continueHint.hidden = !hintText;
         if (gameState !== 'playing') return;
         context.save();
         if (messageTime > 0) {
@@ -3695,6 +3958,7 @@
 
     setMusicEnabled(readAudioPreference(MUSIC_STORAGE_KEY), false);
     setSoundEnabled(readAudioPreference(SOUND_STORAGE_KEY), false);
+    setTutorialEnabled(readAudioPreference(TUTORIAL_STORAGE_KEY), false);
     resetRun();
     showAttractTitle();
     window.requestAnimationFrame(frame);

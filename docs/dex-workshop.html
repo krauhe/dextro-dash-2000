@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- Selvstændigt animationsværksted. Ingen spilmotor eller fysiologi indlæses. -->
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DEX Workshop · DEXTRO DASH 2000</title><link rel="stylesheet" href="dex-workshop.css"></head>
+<body>
+<header><div><p class="eyebrow">DEXTRO DASH 2000 / CHARACTER LAB</p><h1>DEX <span>WORKSHOP</span></h1></div><a href="../index.html">Back to game ↗</a></header>
+<main>
+ <section class="stage-panel" aria-label="Character preview">
+  <div class="stage-heading"><span class="badge">MODULAR RIG · V01</span><span id="frameReadout">FRAME 01 / 60</span></div>
+  <canvas id="rigCanvas" width="1200" height="900" aria-label="Large animated DEX preview"></canvas>
+  <div class="transport"><button id="playToggle" aria-pressed="true">Pause</button><button id="step">Next frame →</button><label class="timeline">Frame <input id="frame" type="range" min="0" max="59" value="0"></label></div>
+  <div class="miniatures"><div><canvas id="smallPreview" width="320" height="180" aria-label="DEX at game scale"></canvas><span>GAME SCALE · 168 PX SOURCE HEIGHT</span></div><p id="loadStatus" role="status">Loading existing DEX artwork…</p></div>
+ </section>
+ <aside class="controls">
+  <section><h2>01 / Motion</h2><div class="two-columns"><label>Animation<select id="animation"><option value="idle">Idle</option><option value="run" selected>Run</option><option value="jump">Jump</option><option value="eat">Eat</option></select></label><label>Facing<select id="facing"><option value="1">Right →</option><option value="-1">← Left</option></select></label></div><label>Playback speed <output id="speedValue">1×</output><input id="speed" type="range" min="0.1" max="2" step="0.1" value="1"></label></section>
+  <section><h2>02 / Equipment</h2><label>Worn equipment<select id="equipment"><option value="none">None</option><option value="pump" selected>Manual pump</option><option value="backpack">Advanced backpack</option></select></label><div class="two-columns"><label>Filled tubes<select id="stock"><option>0</option><option>1</option><option>2</option><option selected>3</option></select></label><label>Lamp art test<select id="lamp"><option value="green">Green</option><option value="orange">Orange pair</option><option value="red">Red rapid</option><option value="off">Off</option></select></label></div></section>
+  <section><h2>03 / Layers</h2><div id="layers" class="layer-grid"></div><div class="checks"><label><input id="anchors" type="checkbox"> Show attachment points</label><label><input id="separate" type="checkbox"> Separate the layers</label></div><label>Preview background<select id="background"><option value="dark">Dark</option><option value="light">Light</option><option value="checker">Transparency checker</option></select></label></section>
+  <section><h2>04 / Attachment editor</h2><label>Part<select id="part"><option value="frontArm">Front arm</option><option value="backArm">Back arm</option><option value="pump">Manual pump</option><option value="backpack">Backpack</option><option value="cgm">CGM</option></select></label><label>X offset <output id="xValue">0</output><input id="offsetX" type="range" min="-25" max="25" step="0.5" value="0"></label><label>Y offset <output id="yValue">0</output><input id="offsetY" type="range" min="-25" max="25" step="0.5" value="0"></label><label>Scale <output id="scaleValue">1×</output><input id="partScale" type="range" min="0.5" max="1.5" step="0.05" value="1"></label><div class="two-columns"><button id="reset">Reset rig</button><button id="export">Export rig JSON ↓</button></div></section>
+ </aside>
+ <section class="notes"><h2>One character. Independent parts.</h2><p>Existing DEX artwork supplies the body, shoes and mouth poses. Arms and tail are code-drawn motion sketches; equipment is attached separately. Switch layers off or separate them to inspect the assembly.</p><p>This is an art prototype, not the live game renderer. The face is still baked into the body poses; fully independent eyes and mouth need dedicated clean artwork. Exports contain visual settings only. No physiology or treatment logic runs here, and changes do not modify the game.</p></section>
+</main><script src="dex-rig.js"></script><script src="dex-workshop.js"></script>
+</body></html>

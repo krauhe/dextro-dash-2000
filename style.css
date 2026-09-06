@@ -37,12 +37,13 @@ body {
 }
 
 .game-page {
-    /* Reservér også plads til læsbare tips nedenunder selve banen. */
+    /* Reservér plads til indstillinger nedenunder selve banen. */
     width: min(98vw, 1920px, calc((100dvh - 144px) * 16 / 9));
     padding: 18px;
 }
 
 .game-cabinet {
+    container-type: inline-size;
     position: relative;
     width: 100%;
     /* Det indre canvas bestemmer højden; kabinetkanten må ikke strække 16:9. */
@@ -66,16 +67,41 @@ body {
     min-height: 76px;
 }
 
-/* Faste tips under spillefladen dækker ikke DEX, fjender eller landingssteder. */
+/* Fast panel i himmelområdet: hverken fastgjort til DEX eller skjult i
+   værktøjslinjen. Højre side friholdes til BG, og teksten skalerer med banen. */
+.hint-panel {
+    position: absolute;
+    z-index: 4;
+    left: 6%;
+    top: 22%;
+    width: 74%;
+    padding: clamp(8px, 1.5cqw, 24px);
+    border: 2px solid #8cefff;
+    border-radius: 12px;
+    background: #10162bf5;
+    box-shadow: 0 8px 28px #0009;
+}
+
+.hint-panel[hidden] { display: none; }
+
+.hint-label {
+    color: #8cefff;
+    font: 700 clamp(10px, 1.15cqw, 17px)/1.2 "Courier New", monospace;
+    letter-spacing: 0.12em;
+}
+
 .game-hint {
-    flex: 1;
-    margin: 0 auto 0 0;
-    padding: 8px 10px;
-    border-left: 3px solid #70e7f5;
-    background: #10162b;
-    color: #effaff;
-    font: 700 clamp(11px, 1.05vw, 16px)/1.4 "Courier New", monospace;
+    margin: 0.4em 0 0.65em;
+    color: #fffdf3;
+    font: 700 clamp(11px, 2.45cqw, 32px)/1.35 "Courier New", monospace;
     white-space: pre-line;
+}
+
+.hint-panel .sound-toggle {
+    min-width: 0;
+    padding: 0.55em 0.8em;
+    border-color: #8cefff;
+    font-size: clamp(10px, 1.3cqw, 18px);
 }
 
 .sound-toggle {
@@ -272,6 +298,34 @@ body {
     display: flex;
     gap: 6px;
 }
+
+/* Samme taster som på forsiden, kompakt i HUD'ens ledige højre del.
+   Skitsen er passiv: ingen klikflade, slowmotion eller BG-afhængige signaler. */
+.play-keyboard-map {
+    position: absolute;
+    z-index: 3;
+    top: 1.8%;
+    left: 59%;
+    display: flex;
+    align-items: flex-end;
+    gap: 2cqw;
+    pointer-events: none;
+}
+.play-keyboard-map[hidden] { display: none; }
+.play-keyboard-map.actions-only .arrow-key-cluster { display: none; }
+.play-keyboard-map .keyboard-group-label {
+    font-size: clamp(6px, 0.9cqw, 14px);
+}
+.play-keyboard-map kbd {
+    width: clamp(14px, 2.3cqw, 36px);
+    font-size: clamp(9px, 1.5cqw, 23px);
+    border-width: 1px;
+    border-radius: 4px;
+}
+.play-keyboard-map .action-key-cluster,
+.play-keyboard-map .arrow-key-cluster,
+.play-keyboard-map .arrow-key-row { gap: 0.4cqw; }
+.play-keyboard-map .key-z { margin-left: 0.6cqw; }
 
 .title-screen #overlayPrompt {
     position: absolute;

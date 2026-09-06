@@ -49,7 +49,7 @@ function createGame() {
     };
     sandbox.window = sandbox; sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
-    for (const file of ['engine/hovorka.js', 'engine/physiology-engine.js', 'level-01.js', 'level-02.js', 'game.js']) {
+    for (const file of ['engine/hovorka.js', 'engine/physiology-engine.js', 'campaign.js', 'game.js']) {
         let source = fs.readFileSync(path.join(root, file), 'utf8');
         if (file === 'game.js') source = source.replace('    window.glucoseRunner = {', `
             window.testGame = {
@@ -57,6 +57,11 @@ function createGame() {
                 update, updatePlayer, jump, useCandy, usePumpInsulin, updateAutoPump,
                 updateHints, setMessage, updateBGAlarms, winLevel, updateStageClearTally,
                 getHighBGFatigue, drawLevel, drawMessage, render, updatePizzaThrowState,
+                setTutorialEnabled, updateEggState, updateEnemies, updateStageObstacles, hitCacheBlock,
+                updateKeyboardSketch, drawKeyboardSketch, startNextLevel,
+                get keyboardPickups(){return keyboardActionPickups;},
+                get platforms(){return platforms;}, get blocks(){return cacheBlocks;}, get enemies(){return enemies;},
+                get tutorialEnabled(){return tutorialEnabled;},
                 getPickupAnimationFrame, drawDiamonds,
                 set animationSeconds(value){elapsedRealSeconds=value;},
                 get projectiles(){return cheeseProjectiles;},
@@ -168,6 +173,9 @@ check('Pizza aims for 1.4 seconds and fires at the locked position, not a moving
     assert.ok(enemy.cheeseThrowTimer >= 3.6, 'cooldown follows the shot');
     g.updatePizzaThrowState(enemy, 0, 0.1);
     assert.equal(g.projectiles.length, 1, 'no repeat shot during cooldown');
+    enemy.x=1000;enemy.cheeseThrowTimer=0;
+    g.updatePizzaThrowState(enemy,0,10);
+    assert.equal(enemy.cheeseWindupTime,0,'distant pizzas do not attack across the level');
 });
 
 check('Held keys cannot dismiss life-loss, game-over or completed screens', () => {
@@ -185,16 +193,16 @@ check('A real low-BG death retains its reason and needs a fresh press', () => {
     key('ArrowRight'); assert.equal(snapshot().lives, 2);
 });
 check('A lower-tier pump preserves the automatic pump and two stored doses', () => {
-    g.startLevel(1); pick('autoPump'); pick('insulin'); pick('insulin'); pick('pump');
+    g.startLevel(8); pick('autoPump'); pick('insulin'); pick('insulin'); pick('pump');
     assert.equal(snapshot().autoPumpActive, true); assert.equal(snapshot().pumpInsulinStored, 2);
 });
 check('Manual to automatic upgrade preserves inventory', () => {
-    g.startLevel(1); pick('pump'); pick('insulin'); pick('autoPump');
+    g.startLevel(8); pick('pump'); pick('insulin'); pick('autoPump');
     assert.equal(snapshot().autoPumpActive, true); assert.equal(snapshot().pumpInsulinStored, 1);
 });
 check('First three pens store; fourth pen is consumed immediately with a full pack', () => {
     for (const type of ['pump', 'autoPump']) {
-        g.startLevel(1); pick(type);
+        g.startLevel(8); pick(type);
         for (let index = 0; index < 3; index++) pick('insulin');
         assert.equal(snapshot().pumpInsulinStored, 3);
         assert.equal(g.player.insulinUseTime, 0);
@@ -207,20 +215,130 @@ check('First three pens store; fourth pen is consumed immediately with a full pa
     }
 });
 check('A full pump also uses an extra pen at low BG, as explicitly designed', () => {
-    g.startLevel(1); pick('autoPump'); for (let i = 0; i < 3; i++) pick('insulin');
+    g.startLevel(8); pick('autoPump'); for (let i = 0; i < 3; i++) pick('insulin');
     g.physiology = {trueBG: 3.5}; const before = g.engine.activeFastInsulin.length;
     pick('insulin'); assert.equal(g.engine.activeFastInsulin.length, before + 1);
 });
 check('First-use hints last 12 visible seconds, queue, and ignore pickup labels', () => {
-    g.startLevel(1); pick('candy'); const text = g.hint.text; pick('insulin');
+    g.startLevel(8); g.setTutorialEnabled(true, false); pick('candy'); const text = g.hint.text; pick('insulin');
     assert.equal(g.hint.text, text); assert.equal(g.hint.remaining, 12);
     pick('pump'); assert.equal(g.hints.length, 1);
     g.updateHints(11); assert.equal(g.hint.text, text);
     g.updateHints(1); assert.match(g.hint.text, /MANUAL PUMP/);
     assert.equal(g.hint.remaining, 12);
 });
+check('Opening movement and ordinary food encounters leave players free to discover', () => {
+    const {g: opening} = createGame();
+    opening.setTutorialEnabled(true, false);
+    opening.startLevel(0);
+    opening.update(0);
+    assert.equal(opening.hint, null);
+    opening.player.x = 180;
+    opening.update(0);
+    assert.equal(opening.hint, null);
+});
+check('Stationary gate apples keep their facing; walking apples turn only toward a patrol edge', () => {
+    const {g: patrol} = createGame();
+    patrol.startLevel(0);
+    const apple = patrol.enemies.find(enemy => enemy.type === 'apple' && enemy.speed === 0);
+    assert.ok(apple, 'stationary food-gate apple exists');
+    const originalX = apple.x;
+    for (const direction of [-1, 1]) {
+        apple.direction = direction;
+        for (let frame = 0; frame < 120; frame++) {
+            patrol.updateEnemies(1 / 60);
+            assert.equal(apple.direction, direction);
+            assert.equal(apple.x, originalX);
+        }
+    }
+    const walker = patrol.enemies.find(enemy => enemy.type === 'apple' && enemy.speed > 0);
+    walker.x = walker.minX;
+    walker.direction = -1;
+    patrol.updateEnemies(1 / 60);
+    assert.equal(walker.direction, 1);
+    patrol.updateEnemies(0);
+    assert.equal(walker.direction, 1, 'does not turn back while facing into the patrol');
+    patrol.updateEnemies(1 / 60);
+    assert.ok(walker.x > walker.minX);
+    walker.x = walker.maxX - walker.width;
+    walker.direction = 1;
+    patrol.updateEnemies(1 / 60);
+    assert.equal(walker.direction, -1);
+    patrol.updateEnemies(0);
+    assert.equal(walker.direction, -1);
+});
+check('Keyboard intro waits for movement on stage one, then leaves after three seconds without slow motion', () => {
+    const {g: intro, element: node, snapshot: state} = createGame();
+    intro.setTutorialEnabled(true, false); intro.startLevel(0);
+    intro.updateKeyboardSketch(10); intro.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').hidden, false);
+    assert.equal(intro.hint, null);
+    intro.handleKeyDown({key:'ArrowUp',repeat:false,preventDefault:noop});
+    intro.updateKeyboardSketch(2.9); intro.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').hidden, false);
+    intro.updateKeyboardSketch(0.2); intro.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').hidden, true);
+    intro.startLevel(1); intro.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').hidden, true);
+    intro.startLevel(0);
+    const before=state().remainingTimeSeconds;
+    for(let i=0;i<60;i++)intro.update(1/60);
+    assert.ok(Math.abs(before-state().remainingTimeSeconds-1)<1e-6);
+    intro.setTutorialEnabled(false,false); intro.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').hidden,true);
+    intro.startLevel(0); intro.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').hidden,true);
+});
+check('Action sketch repeats for three relevant pickups, survives stage progression, and excludes automatic equipment', () => {
+    const {g: tutorial, element: node} = createGame();
+    tutorial.setTutorialEnabled(true,false); tutorial.startLevel(2);
+    function collect(type) {
+        tutorial.items.push({type,x:40,y:45,collected:false});
+        tutorial.player.x=35;tutorial.player.y=35;tutorial.collectObjects();
+        tutorial.drawKeyboardSketch();
+    }
+    function expire() {
+        tutorial.updateHints(100); tutorial.updateKeyboardSketch(6.1); tutorial.drawKeyboardSketch();
+    }
+    collect('insulin'); assert.equal(tutorial.keyboardPickups,0);
+    collect('candy'); assert.equal(tutorial.keyboardPickups,1);
+    assert.equal(node('playKeyboardMap').hidden,false);
+    expire(); assert.equal(node('playKeyboardMap').hidden,true);
+    collect('pump'); assert.equal(tutorial.keyboardPickups,2);
+    assert.equal(node('playKeyboardMap').hidden,false);
+    expire();
+    collect('insulin'); assert.equal(tutorial.keyboardPickups,3);
+    assert.equal(node('playKeyboardMap').hidden,false);
+    expire(); collect('candy'); assert.equal(node('playKeyboardMap').hidden,true);
+    tutorial.startNextLevel(); collect('candy');
+    assert.equal(tutorial.keyboardPickups,3); assert.equal(node('playKeyboardMap').hidden,true);
+    tutorial.startLevel(8); collect('autoPump'); collect('insulin');
+    assert.equal(tutorial.keyboardPickups,0);
+    collect('candy'); assert.equal(tutorial.keyboardPickups,1);
+    tutorial.state='life-lost'; tutorial.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').hidden,true);
+});
+check('Every stationary patrol monster keeps its facing across all ten stages', () => {
+    const {g: patrol} = createGame();
+    let checked = 0;
+    for (let stage = 0; stage < 10; stage++) {
+        patrol.startLevel(stage);
+        // Æggets særskilte fald/rul og pizzaens sigtning har bevidste retningsskift.
+        // Isolér patruljen fra disse angreb, så testen måler kantlogikken alene.
+        const stationary = patrol.enemies.filter(enemy => enemy.speed === 0 && !enemy.eggDrop);
+        for (const enemy of stationary) enemy.cheeseThrowTimer = 100;
+        const directions = stationary.map(enemy => enemy.direction);
+        for (let frame = 0; frame < 120; frame++) {
+            patrol.updateEnemies(1 / 60);
+            stationary.forEach((enemy, index) => assert.equal(enemy.direction, directions[index],
+                `stage ${stage + 1}: stationary ${enemy.type}`));
+        }
+        checked += stationary.length;
+    }
+    assert.ok(checked >= 10, 'covers multiple stationary encounters across the campaign');
+});
 check('Candy and manual insulin animate only when actually used', () => {
-    g.startLevel(1); pick('candy'); assert.equal(g.player.candyUseTime, 0);
+    g.startLevel(8); pick('candy'); assert.equal(g.player.candyUseTime, 0);
     assert.equal(g.useCandy(), true); assert.ok(g.player.candyUseTime > 0);
     assert.ok(g.player.eatAnimationTime > 0);
     pick('pump'); pick('insulin'); assert.equal(g.player.insulinUseTime, 0);
@@ -258,14 +376,15 @@ check('Low and high alarms differ, are rate-limited, and have boundary hysteresi
     assert.equal(audioCalls.filter(c => c.name === 'highBGAlarm').length, 1);
 });
 check('Pit fill is inside the visible playfield and restricted to real gaps', () => {
-    g.startLevel(0); calls.length = 0; g.drawLevel();
+    g.startLevel(4); const floor=g.platforms.find(p=>p.crumble); floor.collapsed=true;
+    calls.length = 0; g.drawLevel();
     const pits = calls.filter(c => c.type === 'rect' && c.color === '#0b1024');
-    assert.equal(pits.length, 5);
-    assert.deepEqual(pits[0].args, [610, 154, 52, 14]);
+    assert.equal(pits.length, 1);
+    assert.deepEqual(pits[0].args, [floor.x, 154, 32, 14]);
     for (const pit of pits) assert.ok(pit.args[1] + 32 < 200);
 });
 check('Autopump reassesses current IOB and COB, and never spends multiple doses per check', () => {
-    g.startLevel(1); pick('autoPump'); for (let i = 0; i < 3; i++) pick('insulin'); g.settleFlights();
+    g.startLevel(8); pick('autoPump'); for (let i = 0; i < 3; i++) pick('insulin'); g.settleFlights();
     g.physiology = {trueBG: 8, cob: 20, displayIOB: 3}; g.updateAutoPump(0.1);
     assert.equal(snapshot().pumpInsulinStored, 3);
     g.physiology = {trueBG: 8, cob: 0, displayIOB: 0}; g.updateAutoPump(0.1);
@@ -277,15 +396,91 @@ check('Autopump reassesses current IOB and COB, and never spends multiple doses 
     assert.equal(snapshot().pumpInsulinStored, 2);
 });
 check('Rendering fallback, HUD, pulse, active hint and action effects does not throw', () => {
-    g.startLevel(1); pick('autoPump'); pick('candy'); g.useCandy(); pick('insulin');
+    g.startLevel(8); pick('autoPump'); pick('candy'); g.useCandy(); pick('insulin');
     g.physiology = {trueBG: 3.5}; g.render();
     g.physiology = {trueBG: 15}; g.render();
     assert.equal(element('gameCanvas').width, 1920);
     assert.equal(element('gameCanvas').height, 1080);
     assert.equal(element('gameHint').hidden, false);
+    assert.equal(element('hintPanel').hidden, false);
     assert.match(element('gameHint').textContent, /AUTO PUMP/);
     g.state = 'life-lost'; g.render();
     assert.equal(element('gameHint').hidden, true);
+    assert.equal(element('hintPanel').hidden, true);
+});
+
+check('Tutorial slow motion scales world time and expires on real time; Enter dismisses', () => {
+    g.startLevel(0);g.setTutorialEnabled(true,false);
+    g.player.x=34;
+    g.update(0);
+    g.setMessage('HINT: Test controls',12);
+    const before=snapshot().remainingTimeSeconds;
+    for(let i=0;i<60;i++)g.update(1/60);
+    assert.ok(Math.abs(before-snapshot().remainingTimeSeconds-0.06)<1e-6);
+    assert.ok(Math.abs(g.hint.remaining-11)<1e-6);
+    key('Enter');assert.equal(g.hint,null);
+    g.setTutorialEnabled(false,false);
+    const normal=snapshot().remainingTimeSeconds;
+    for(let i=0;i<60;i++)g.update(1/60);
+    assert.ok(Math.abs(normal-snapshot().remainingTimeSeconds-1)<1e-6);
+});
+check('Every stage renders, starts near BG 6 with no COB, and 0 selects stage 10', () => {
+    g.setTutorialEnabled(false,false);
+    for(let stage=0;stage<10;stage++){
+        g.startLevel(stage);assert.ok(Math.abs(snapshot().bg-6)<0.1);
+        assert.equal(snapshot().cob,0);g.render();
+    }
+    key('0');assert.equal(snapshot().stage,10);
+    assert.ok(g.platforms.some(p=>p.crumble));
+});
+check('Solid tunnel ceiling stops upward movement and vertical sides stop horizontal movement', () => {
+    g.startLevel(0);const roof=g.platforms.find(p=>p.foodGate);
+    g.player.x=roof.x+8;g.player.y=131;g.player.previousY=131;g.player.onGround=true;
+    g.jump();g.updatePlayer(1/30);assert.equal(g.player.y,128);assert.equal(g.player.vy,0);
+    g.player.x=roof.x-20;g.player.y=100;g.player.vx=88;g.keys.right=true;
+    for(let i=0;i<30;i++)g.updatePlayer(1/120);
+    assert.ok(g.player.x+16<=roof.x+0.1);g.keys.right=false;
+});
+check('A real upward collision empties a cache once and cancels the ascent', () => {
+    g.startLevel(0);const block=g.blocks.find(b=>b.reward==='diamonds');
+    g.player.x=block.x+2;g.player.y=131;g.player.onGround=true;g.jump();
+    for(let i=0;i<20&&!block.used;i++)g.updatePlayer(1/120);
+    assert.equal(block.used,true);assert.equal(g.player.vy,0);
+    const count=g.particles.length;g.hitCacheBlock(block);assert.equal(g.particles.length,count);
+});
+check('Crumble floors warn, disappear, reform safely, and reset on restart', () => {
+    g.startLevel(4);const floor=g.platforms.find(p=>p.crumble);
+    g.player.x=floor.x+4;g.player.y=130;g.player.vy=30;
+    g.updatePlayer(1/30);assert.equal(floor.crumbleTime,1.1);
+    g.updateStageObstacles(1);assert.equal(floor.collapsed,false);
+    g.updateStageObstacles(0.11);assert.equal(floor.collapsed,true);
+    g.player.y=154;g.updateStageObstacles(6);assert.equal(floor.collapsed,true);
+    g.player.x=34;g.updateStageObstacles(0.1);assert.equal(floor.collapsed,false);
+    g.startLevel(4);assert.equal(g.platforms.find(p=>p.crumble).crumbleTime,null);
+});
+check('Egg gives warning, then falls and rolls; rolling contact loses a life', () => {
+    g.startLevel(1);const egg=g.enemies.find(e=>e.eggDrop);
+    g.player.x=egg.x-100;g.updateEggState(egg,0.01);assert.equal(egg.eggState,'warning');
+    g.updateEggState(egg,1.2);assert.equal(egg.eggState,'warning');
+    g.updateEggState(egg,0.21);assert.equal(egg.eggState,'falling');
+    for(let i=0;i<120&&egg.eggState==='falling';i++)g.updateEggState(egg,1/120);
+    assert.equal(egg.eggState,'rolling');
+    g.player.x=egg.x;g.player.y=egg.y;g.updateEnemies(0.001);assert.equal(g.state,'dying');
+    g.updateEggState(egg,2.7);assert.equal(egg.eggState,'resting');
+});
+check('Enemy bounces actually reach bonus plateaus at 30 and 60 FPS', () => {
+    for(const fps of [30,60]){
+        g.startLevel(1);const target=g.platforms.find(p=>p.y===77);
+        const enemy=g.enemies.find(e=>Math.abs(e.x-target.x)<1);
+        g.player.x=enemy.x+2;g.player.y=enemy.y-22;g.player.previousY=enemy.y-24;g.player.vy=20;
+        g.updateEnemies(0);assert.ok(g.player.vy<0);
+        let landed=false;
+        for(let i=0;i<fps*2;i++){
+            g.updatePlayer(1/fps);
+            if(g.player.onGround&&Math.abs(g.player.y+23-target.y)<0.01){landed=true;break;}
+        }
+        assert.ok(landed,`stomp plateau at ${fps} FPS`);
+    }
 });
 
 check('Real alarm methods use distinct motifs and obey the effects toggle independently of music', () => {
@@ -302,8 +497,23 @@ check('Real alarm methods use distinct motifs and obey the effects toggle indepe
     assert.equal(audio.musicEnabled,false);
 });
 
+check('Biome music has distinct motifs and schedules all new voices on the music channel',()=>{
+    const scope={window:{},console};vm.createContext(scope);
+    vm.runInContext(fs.readFileSync(path.join(root,'audio.js'),'utf8')+'\nthis.AudioClass=GlucoseRunnerAudio;',scope);
+    const motifs=[];
+    for(const theme of ['dark','ice','volcano']){
+        const audio=new scope.AudioClass();audio.setTheme(theme);const notes=[];
+        audio.tone=(...args)=>{assert.equal(args[5],'music');notes.push(args[0]);};
+        audio.sweep=(...args)=>assert.equal(args[6],'music');
+        audio.noise=(...args)=>assert.equal(args[2],'music');
+        for(let i=0;i<32;i++)audio.playMusicStep();
+        assert.equal(audio.step,32);motifs.push(notes.join(','));
+    }
+    assert.equal(new Set(motifs).size,3);
+});
+
 // Kvantitativt udviklerforsøg: ingen klinisk assertion om et sikkert BG-interval.
-g.startLevel(1); pick('autoPump'); for (let i = 0; i < 3; i++) pick('insulin');
+g.startLevel(8); pick('autoPump'); for (let i = 0; i < 3; i++) pick('insulin');
 g.engine.addFood({carbs:20,weight:20/27*250,eatTimeMin:1,carbParams:{simpleFraction:1,fiberPerGram:0,retentionFactor:0.4}});
 g.player.invulnerableTime = 0;
 let minimum = Infinity, maximum = -Infinity, previous = 3;

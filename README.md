@@ -26,7 +26,7 @@ DEXTRO DASH 2000 is a standalone type 1 diabetes browser game inspired by the en
 
 Food is part of the level design. Running into a food monster means eating it, with its carbohydrate, protein and fat entering the simulation. Stomping it removes the threat and creates a super-jump. Insulin can lower DEX's blood glucose and candy can raise it. Low BG costs a life; high BG progressively reduces running speed and jump height. Level bonuses reward remaining time and collected diamonds — there is no TIR bonus.
 
-The game currently contains two playable stages, an animated title screen, credits and an automatic attract-mode demo. Its 1920 × 1080 Full HD canvas uses a 16:9 view and scales to the browser window without changing jump physics.
+The local campaign now contains ten stages, an animated title screen, credits and an automatic attract-mode demo. Its 1920 × 1080 Full HD canvas uses a 16:9 view and scales to the browser window without changing jump physics. The first stage introduces Apple Lady; the second adds a wobbling, falling and rolling Egg Man. Later stages introduce banana, avocado, soda, cake, burger and Pizza Lady, with cellar, crystal cave, mountain, ice and volcanic scenery.
 
 ## Gameplay
 
@@ -46,7 +46,7 @@ The game runs directly in a modern desktop browser. No installation, account or 
 | Key | Action |
 | --- | --- |
 | Left / Right | Run and backtrack as far as the beginning of the stage |
-| Up | Jump |
+| Up | Tap for a small jump; hold for a full jump |
 | A | Use one collected 10 g fast-acting candy |
 | Z | Use one stored insulin dose when the manual pump is equipped |
 | M | Toggle music |
@@ -54,7 +54,9 @@ The game runs directly in a modern desktop browser. No installation, account or 
 
 Without a pump, touching an insulin pen immediately gives DEX one game dose. Both pumps store the first three pens collected. **When the pump is full, extra pens are used immediately**, even if DEX's BG is already low. The manual pump uses a stored dose on Z; the advanced backpack uses stored doses automatically. Neither equipment type guarantees a safe outcome. The backpack's three blue tubes and the HUD counter show its stock.
 
-Candy is stored on collection and eaten on A. First-use hints explain these actions below the playfield for at least 12 seconds each. Low and high BG have different sound warnings, independently of music, and the BG scale pulses outside its green zone. Running speed and jump height decrease continuously and linearly between BG 10 and 19; above 19 the maximum slowdown remains.
+Round candy is stored on collection and eaten on A; candy canes are eaten on contact. First-use hints appear in a large panel inside the playfield for 12 real seconds, leaving the BG scale visible. There is no opening movement tutorial or generic explanation of food effects: players discover these through play. Remaining tips explain equipment controls and special mechanics, never a recommended treatment action. The whole game, including physiology and the timer, slows to 6% speed while a tip is visible. Press Enter or CONTINUE to dismiss it sooner. TUTORIAL ON/OFF is saved on the device. Low and high BG have different sound warnings, independently of music, and the BG scale pulses outside its green zone. Running speed and jump height decrease continuously and linearly between BG 10 and 19; above 19 the maximum slowdown remains.
+
+Low tunnels include unavoidable food contacts. Other routes place diamonds beside insulin, or require a monster bounce to reach a cache. Hit caches from below to release their contents. Cracked floors give a brief warning before collapsing; later volcanic routes also have lava gaps. See [the campaign design and food provenance](docs/CAMPAIGN.md) for development details and current testing limits.
 
 ## Physiology-powered gameplay
 
@@ -97,7 +99,9 @@ There is no framework, package installation or compilation step. The project is 
 
 ## Level development and checks
 
-Open [the level workshop](docs/level-overview.html) for zoomable maps of both actual stages, food patrols, pickups and diamond-risk clusters. It runs locally, including directly from a file. Height is exaggerated in the overview for readability; the game currently scrolls horizontally only.
+Open the [DEX Workshop](docs/dex-workshop.html) to prototype modular character animation: pause or step frames, switch direction, toggle body parts and equipment, inspect attachment points, adjust offsets and export visual rig settings. It reuses current DEX artwork with code-drawn arm and tail sketches. The face is still part of the body images; this separate art tool does not change gameplay or run physiology.
+
+Open [the level workshop](docs/level-overview.html) for zoomable maps of all ten actual stages, food patrols, solid ceilings, caches, crumbling floors and diamond-risk clusters. It runs locally, including directly from a file. Height is exaggerated in the overview for readability; the game currently scrolls horizontally only.
 
 Generate a reproducible, **unpublished draft** and load its JSON through the workshop's file input:
 
@@ -108,7 +112,7 @@ node tests/gameplay.test.js
 node tests/level-tools.test.cjs
 ```
 
-The helper introduces cake, then soda, then pizza, adds optional stepped plateaus, and places some diamonds together with pens or food. It refuses to overwrite an existing draft. Theme names are design proposals, not implemented game biomes. Every candidate still needs route review and an in-game playtest before integration.
+The helper uses the same campaign factory as the game: apple first, egg second, followed by the more varied cast. Its seed varies optional bonus placements while preserving essential jump geometry and pen/diamond overlaps. It refuses to overwrite an existing draft. Every candidate still needs route review and an in-game playtest before integration. Developer shortcuts 1–9 select those stages; 0 selects stage 10.
 
 The local Codex skill `dextro-level-generator` guides this workflow. New food profiles require ordinary serving-size and macronutrient data; they must not be modelled as interchangeable sugar pickups. The regression suite checks gameplay behavior, not clinical validity or suitability for treatment decisions.
 

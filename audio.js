@@ -18,6 +18,37 @@ class GlucoseRunnerAudio {
         this.musicEnabled = true;
         this.effectsEnabled = true;
         this.musicStepMilliseconds = 165;
+        this.theme = 'bright';
+    }
+
+    setTheme(theme) {
+        if(this.theme===theme) return;
+        const restart=Boolean(this.musicTimer);
+        this.stop(); this.theme=theme; this.step=0;
+        this.musicStepMilliseconds={bright:165,dark:205,ice:195,volcano:150}[theme] || 165;
+        if(restart && this.musicEnabled) this.musicTimer=window.setInterval(()=>this.playMusicStep(),this.musicStepMilliseconds);
+    }
+
+    playAtmosphereStep() {
+        // Originale arrangementer: grottens langsomme molmotiv, isens klokker
+        // og vulkanens bastema deler pulsen, men ikke det lyse hovedarrangement.
+        const ice=this.theme==='ice', fire=this.theme==='volcano';
+        const roots=fire?[38,34,36,33]:ice?[50,46,48,45]:[45,41,38,40];
+        const phrase=ice?[12,null,19,15,null,22,19,null]:fire?[0,null,7,10,7,null,3,2]:[12,null,15,null,19,17,null,14];
+        const index=this.step%32, beat=index%8, root=roots[Math.floor(index/8)];
+        const note=phrase[beat];
+        if(note!==null) {
+            this.tone(root+note,ice?0.48:0.24,ice?'sine':'triangle',0.028,0,'music');
+            this.tone(root+note,0.25,'sine',0.008,0.17,'music');
+        }
+        if(beat===0) {
+            this.tone(root,0.85,'triangle',0.03,0,'music');
+            for(const interval of [12,15,19]) this.tone(root+interval,1.2,'sine',0.008,0,'music');
+        }
+        if(beat===0||beat===4) this.sweep(fire?120:80,38,0.16,'sine',fire?0.03:0.014,0,'music');
+        if(fire && beat%2===0) this.noise(0.035,0.008,'music');
+        if(ice && beat===6) this.tone(root+31,0.7,'sine',0.009,0,'music');
+        this.step++;
     }
 
     async start() {
@@ -125,6 +156,7 @@ class GlucoseRunnerAudio {
     }
 
     playMusicStep() {
+        if(this.theme!=='bright') { this.playAtmosphereStep(); return; }
         // Den originale 64-trins melodi bruger A-mol/C-dur-toner, synkoper og
         // tydelige pauser. Arrangementets øvrige stemmer følger harmonikken,
         // men undgår at fordoble leadets rytme hele tiden.

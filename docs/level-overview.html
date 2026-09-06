@@ -17,24 +17,31 @@ p{color:#abbad3;line-height:1.6}header{border-bottom:1px solid #35415b;padding-b
 </head>
 <body>
 <header><div class="meta">DEVELOPMENT / NOT A PLAYABLE LEVEL</div><h1>Level workshop</h1>
-<p>Both playable stages, directly from their source files. Inspect platforms, patrols and reward risks without playing.</p></header>
+<p>All ten stages, directly from the game's campaign data. Inspect platforms, patrols, caches and reward risks without playing.</p></header>
 <div class="toolbar"><label>Horizontal zoom <input id="zoom" type="range" min="1" max="5" value="1" step="0.25"></label>
 <label>Inspect a generated draft <input id="draft" type="file" accept=".json,application/json"></label><a href="../index.html">Open game</a></div>
 <div class="legend"><span style="--color:#65daa6">Platform</span><span style="--color:#a892ff">Diamond</span><span style="--color:#35e0ef">Pen</span><span style="--color:#fc5b78">Candy</span><span style="--color:#ffe081">Pump</span><span style="--color:#f0a379">Food / patrol</span><span style="--color:#ff876f">Reward near food or a pen</span></div>
-<p class="note">Horizontal fit exaggerates height for readability. Orange rings flag nearby BG-affecting objects, not guaranteed collisions or reachable routes. Theme proposals in generated drafts do not change the game's renderer.</p>
+<p class="note">Horizontal fit exaggerates height for readability. Orange rings flag nearby BG-affecting objects. Purple fills are solid ceilings; brown tiles crumble; cyan boxes contain rewards. These maps use the same geometry and themes as the game.</p>
+<details><summary>New food character artwork</summary><div id="cast" class="toolbar"></div></details>
 <div id="maps"></div><p id="status" role="status"></p>
 <footer>Jump geometry at normal BG: ordinary ideal rise ≈46 units, ordinary same-height reach ≈74 units. Enemy bounces extend this. Check real collisions in game; high BG reduces these distances. No vertical camera is implemented yet.</footer>
-<script src="../level-01.js"></script><script src="../level-02.js"></script>
+<script src="../campaign.js"></script>
 <script>
 /* Samme data som spillet; ingen kopier af koordinater. Tilføj nye banefiler her ved integration. */
 'use strict';
-const stages=[{...GLUCOSE_RUNNER_LEVEL_01,name:'Level 1'}, {...GLUCOSE_RUNNER_LEVEL_02,name:'Level 2'}];
+const stages=[...DEXTRO_CAMPAIGN];
+for(const type of ['apple','egg','banana','avocado','burger','pizza']) {
+    const figure=document.createElement('figure');figure.style.margin='0';
+    const img=document.createElement('img');img.src=`../assets/food-${type}.png`;img.alt=type;img.width=130;img.height=130;
+    const caption=document.createElement('figcaption');caption.textContent=type;
+    figure.append(img,caption);document.getElementById('cast').append(figure);
+}
 const maps=document.getElementById('maps'), zoom=document.getElementById('zoom');
 function drawAll(){
     maps.replaceChildren();
     for(const level of stages){
         const card=document.createElement('section'); card.className='card';
-        const heading=document.createElement('h2');heading.textContent=level.name;
+        const heading=document.createElement('h2');heading.textContent=`${level.stage}. ${level.name} — ${level.theme}`;
         const meta=document.createElement('p');meta.className='meta';
         meta.textContent=`${level.width} units · ${level.platforms.length} platforms · ${level.diamonds.length} diamonds · ${level.enemies.length} food monsters${level.draft?' · DRAFT / '+level.themeProposal:''}`;
         const viewport=document.createElement('div');viewport.className='viewport';
@@ -47,7 +54,8 @@ function drawAll(){
         const X=x=>16+x*sx,Y=y=>24+(y-minY)*sy;
         ctx.strokeStyle='#223450';ctx.lineWidth=1;ctx.font='11px monospace';ctx.fillStyle='#7289ad';
         for(let x=0;x<level.width;x+=320){ctx.beginPath();ctx.moveTo(X(x),18);ctx.lineTo(X(x),222);ctx.stroke();ctx.fillText(x,X(x),234);}
-        for(const p of level.platforms){ctx.fillStyle='#1d665e';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,Math.min(18,p.height*sy));ctx.fillStyle='#65daa6';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,3);}
+        for(const p of level.platforms){ctx.fillStyle=p.solid?'#706383':p.crumble?'#ad7459':'#1d665e';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,p.solid?p.height*sy:Math.min(18,p.height*sy));ctx.fillStyle='#65daa6';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,3);}
+        for(const b of level.blocks||[]){ctx.fillStyle='#a8efff';ctx.fillRect(X(b.x),Y(b.y),Math.max(5,b.width*sx),b.height*sy);ctx.font='10px monospace';ctx.fillText(b.reward,X(b.x),Y(b.y)-5);}
         for(const e of level.enemies){
             ctx.strokeStyle='#b88159';ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(X(e.minX),Y(e.y));ctx.lineTo(X(e.maxX),Y(e.y));ctx.stroke();ctx.setLineDash([]);
             ctx.fillStyle='#f0a379';ctx.fillRect(X(e.x)-4,Y(e.y)-8,8,11);ctx.font='11px monospace';ctx.fillText(e.type,X(e.x)-10,Y(e.y)-12);
