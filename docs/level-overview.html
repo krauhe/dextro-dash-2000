@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Development-only map of the actual stage data. No physiology or autoplay. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DEXTRO DASH 2000 — Level workshop</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui;background:#0c1020;color:#e4eafd}*{box-sizing:border-box}
+body{margin:auto;max-width:1600px;padding:28px}h1{font-size:clamp(25px,4vw,42px);margin:0}h2{margin:0 0 8px}
+p{color:#abbad3;line-height:1.6}header{border-bottom:1px solid #35415b;padding-bottom:16px}
+.toolbar{display:flex;gap:24px;flex-wrap:wrap;align-items:center;margin:22px 0}.card{padding:20px;background:#161e32;border:1px solid #33425d;border-radius:12px;margin:20px 0}
+.viewport{overflow-x:auto;border-radius:8px;background:#080d19;border:1px solid #324257}canvas{display:block}
+.meta{font:14px ui-monospace,monospace;color:#afc7e3}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:14px}
+.legend span::before{content:'●';color:var(--color);margin-right:6px}input,button{font:inherit;accent-color:#55e3fb}a{color:#77ddff}
+.note{border-left:3px solid #ffd063;padding-left:12px}footer{font-size:14px;color:#abbad3}
+</style>
+</head>
+<body>
+<header><div class="meta">DEVELOPMENT / NOT A PLAYABLE LEVEL</div><h1>Level workshop</h1>
+<p>Both playable stages, directly from their source files. Inspect platforms, patrols and reward risks without playing.</p></header>
+<div class="toolbar"><label>Horizontal zoom <input id="zoom" type="range" min="1" max="5" value="1" step="0.25"></label>
+<label>Inspect a generated draft <input id="draft" type="file" accept=".json,application/json"></label><a href="../index.html">Open game</a></div>
+<div class="legend"><span style="--color:#65daa6">Platform</span><span style="--color:#a892ff">Diamond</span><span style="--color:#35e0ef">Pen</span><span style="--color:#fc5b78">Candy</span><span style="--color:#ffe081">Pump</span><span style="--color:#f0a379">Food / patrol</span><span style="--color:#ff876f">Reward near food or a pen</span></div>
+<p class="note">Horizontal fit exaggerates height for readability. Orange rings flag nearby BG-affecting objects, not guaranteed collisions or reachable routes. Theme proposals in generated drafts do not change the game's renderer.</p>
+<div id="maps"></div><p id="status" role="status"></p>
+<footer>Jump geometry at normal BG: ordinary ideal rise ≈46 units, ordinary same-height reach ≈74 units. Enemy bounces extend this. Check real collisions in game; high BG reduces these distances. No vertical camera is implemented yet.</footer>
+<script src="../level-01.js"></script><script src="../level-02.js"></script>
+<script>
+/* Samme data som spillet; ingen kopier af koordinater. Tilføj nye banefiler her ved integration. */
+'use strict';
+const stages=[{...GLUCOSE_RUNNER_LEVEL_01,name:'Level 1'}, {...GLUCOSE_RUNNER_LEVEL_02,name:'Level 2'}];
+const maps=document.getElementById('maps'), zoom=document.getElementById('zoom');
+function drawAll(){
+    maps.replaceChildren();
+    for(const level of stages){
+        const card=document.createElement('section'); card.className='card';
+        const heading=document.createElement('h2');heading.textContent=level.name;
+        const meta=document.createElement('p');meta.className='meta';
+        meta.textContent=`${level.width} units · ${level.platforms.length} platforms · ${level.diamonds.length} diamonds · ${level.enemies.length} food monsters${level.draft?' · DRAFT / '+level.themeProposal:''}`;
+        const viewport=document.createElement('div');viewport.className='viewport';
+        const canvas=document.createElement('canvas');viewport.append(canvas);card.append(heading,meta,viewport);maps.append(card);
+        const width=Math.max(280,viewport.clientWidth)*Number(zoom.value), height=240, dpr=devicePixelRatio||1;
+        canvas.width=Math.round(width*dpr);canvas.height=height*dpr;canvas.style.width=width+'px';canvas.style.height=height+'px';
+        const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+        const minY=Math.min(0,...level.platforms.map(p=>p.y-35));
+        const sx=(width-32)/level.width, sy=176/(level.groundY-minY);
+        const X=x=>16+x*sx,Y=y=>24+(y-minY)*sy;
+        ctx.strokeStyle='#223450';ctx.lineWidth=1;ctx.font='11px monospace';ctx.fillStyle='#7289ad';
+        for(let x=0;x<level.width;x+=320){ctx.beginPath();ctx.moveTo(X(x),18);ctx.lineTo(X(x),222);ctx.stroke();ctx.fillText(x,X(x),234);}
+        for(const p of level.platforms){ctx.fillStyle='#1d665e';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,Math.min(18,p.height*sy));ctx.fillStyle='#65daa6';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,3);}
+        for(const e of level.enemies){
+            ctx.strokeStyle='#b88159';ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(X(e.minX),Y(e.y));ctx.lineTo(X(e.maxX),Y(e.y));ctx.stroke();ctx.setLineDash([]);
+            ctx.fillStyle='#f0a379';ctx.fillRect(X(e.x)-4,Y(e.y)-8,8,11);ctx.font='11px monospace';ctx.fillText(e.type,X(e.x)-10,Y(e.y)-12);
+        }
+        for(const item of level.items){
+            ctx.fillStyle=item.type==='insulin'?'#35e0ef':item.type==='candy'?'#fc5b78':'#ffe081';
+            ctx.beginPath();ctx.arc(X(item.x),Y(item.y),4,0,Math.PI*2);ctx.fill();
+            if(item.type.includes('Pump')||item.type==='pump'){ctx.font='10px monospace';ctx.fillText(item.type,X(item.x)-10,Y(item.y)-9);}
+        }
+        for(const [x,y] of level.diamonds){
+            const risky=level.items.some(i=>i.type==='insulin'&&Math.abs(i.x-x)<23&&Math.abs(i.y-y)<21)||level.enemies.some(e=>Math.abs(e.x-x)<28&&Math.abs(e.y-y)<23);
+            if(risky){ctx.strokeStyle='#ff876f';ctx.beginPath();ctx.arc(X(x),Y(y),7,0,Math.PI*2);ctx.stroke();}
+            ctx.fillStyle='#b8a4ff';ctx.beginPath();ctx.moveTo(X(x),Y(y)-4);ctx.lineTo(X(x)+3,Y(y));ctx.lineTo(X(x),Y(y)+4);ctx.lineTo(X(x)-3,Y(y));ctx.fill();
+        }
+        ctx.fillStyle='#ffffff';ctx.font='bold 11px monospace';ctx.fillText('DEX',X(34),Y(level.groundY)-10);
+        ctx.strokeStyle='#f6d770';ctx.beginPath();ctx.moveTo(X(level.finishX),Y(80));ctx.lineTo(X(level.finishX),Y(level.groundY));ctx.stroke();
+        ctx.fillStyle='#f6d770';ctx.fillText('FINISH',Math.min(width-52,X(level.finishX)-30),Y(80)-7);
+    }
+}
+zoom.addEventListener('input',drawAll);window.addEventListener('resize',drawAll);
+document.getElementById('draft').addEventListener('change',async event=>{
+    try{
+        const file=event.target.files[0];if(!file)return;
+        const draft=JSON.parse(await file.text());
+        if(!Number.isFinite(draft.width)||draft.width<=0||!Number.isFinite(draft.groundY)||!Number.isFinite(draft.finishX))throw Error('Invalid level bounds');
+        for(const key of ['platforms','items','diamonds','enemies'])if(!Array.isArray(draft[key])||draft[key].length>5000)throw Error('Invalid '+key);
+        stages.push({...draft,draft:true,name:draft.name||file.name});drawAll();document.getElementById('status').textContent='Draft loaded locally. No game files were changed.';
+    }catch(error){document.getElementById('status').textContent='Could not load draft: '+error.message;}
+});
+drawAll();
+</script></body></html>

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/title-splash-v2.png" width="900" alt="DEXTRO DASH 2000 title artwork showing DEX smashing through a cake monster">
+  <img src="assets/readme-title.png" width="900" alt="DEXTRO DASH 2000 arcade title above DEX smashing through a cake monster">
 </p>
 
 <h1 align="center">DEXTRO DASH 2000</h1>
@@ -16,15 +16,17 @@
   <a href="LICENSE">GPL-3.0</a>
 </p>
 
-> **Prototype status:** This is an experimental game, not a medical device or a source of treatment advice. It uses fixed fictional parameters and does not use personal health data.
+> **Prototype status:** This experimental arcade game uses a fixed fictional DEX and no personal health data. It is not intended for medical use or treatment decisions and never provides dosing recommendations. Regulatory status has not been formally determined.
+
+See [the EU/FDA regulatory design boundaries](docs/REGULATORY-DESIGN-GUIDELINES.md) for the project's no-dosing rule, feature restrictions and release checklist.
 
 ## The game
 
 DEXTRO DASH 2000 is a standalone type 1 diabetes browser game inspired by the energy, colour and immediacy of early-1990s home-computer platform games. Completing each platform stage is only one part of the challenge: the player must also control DEX's blood glucose throughout the level. A real-time physiology engine tracks true blood glucose, carbohydrate on board and insulin on board while DEX runs, jumps and eats food monsters.
 
-Food is part of the level design. Running into a food monster means eating it, with its carbohydrate, protein and fat entering the simulation. Stomping it removes the threat and creates a super-jump. Insulin can lower blood glucose, candy can raise it, and staying in range improves the level bonus.
+Food is part of the level design. Running into a food monster means eating it, with its carbohydrate, protein and fat entering the simulation. Stomping it removes the threat and creates a super-jump. Insulin can lower DEX's blood glucose and candy can raise it. Low BG costs a life; high BG progressively reduces running speed and jump height. Level bonuses reward remaining time and collected diamonds — there is no TIR bonus.
 
-The game currently contains two playable stages, an animated title screen, credits and an automatic attract-mode demo.
+The game currently contains two playable stages, an animated title screen, credits and an automatic attract-mode demo. Its 1920 × 1080 Full HD canvas uses a 16:9 view and scales to the browser window without changing jump physics.
 
 ## Gameplay
 
@@ -50,7 +52,9 @@ The game runs directly in a modern desktop browser. No installation, account or 
 | M | Toggle music |
 | L | Toggle sound effects |
 
-In stage 1, touching an insulin pen immediately delivers 1 unit of rapid-acting insulin. In stage 2, the manual pump can store up to three pens. The advanced pump automatically delivers stored insulin when true blood glucose is above 7 mmol/L.
+Without a pump, touching an insulin pen immediately gives DEX one game dose. Both pumps store the first three pens collected. **When the pump is full, extra pens are used immediately**, even if DEX's BG is already low. The manual pump uses a stored dose on Z; the advanced backpack uses stored doses automatically. Neither equipment type guarantees a safe outcome. The backpack's three blue tubes and the HUD counter show its stock.
+
+Candy is stored on collection and eaten on A. First-use hints explain these actions below the playfield for at least 12 seconds each. Low and high BG have different sound warnings, independently of music, and the BG scale pulses outside its green zone. Running speed and jump height decrease continuously and linearly between BG 10 and 19; above 19 the maximum slowdown remains.
 
 ## Physiology-powered gameplay
 
@@ -90,6 +94,23 @@ python -m http.server 8000
 Then open `http://localhost:8000/`.
 
 There is no framework, package installation or compilation step. The project is plain HTML, CSS and JavaScript using the Canvas and Web Audio APIs.
+
+## Level development and checks
+
+Open [the level workshop](docs/level-overview.html) for zoomable maps of both actual stages, food patrols, pickups and diamond-risk clusters. It runs locally, including directly from a file. Height is exaggerated in the overview for readability; the game currently scrolls horizontally only.
+
+Generate a reproducible, **unpublished draft** and load its JSON through the workshop's file input:
+
+```bash
+node tools/generate-level.cjs --stage 3 --seed 42 --out stage-3-draft.json
+node tests/engine-smoke.test.js
+node tests/gameplay.test.js
+node tests/level-tools.test.cjs
+```
+
+The helper introduces cake, then soda, then pizza, adds optional stepped plateaus, and places some diamonds together with pens or food. It refuses to overwrite an existing draft. Theme names are design proposals, not implemented game biomes. Every candidate still needs route review and an in-game playtest before integration.
+
+The local Codex skill `dextro-level-generator` guides this workflow. New food profiles require ordinary serving-size and macronutrient data; they must not be modelled as interchangeable sugar pickups. The regression suite checks gameplay behavior, not clinical validity or suitability for treatment decisions.
 
 ## Credits
 

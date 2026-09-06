@@ -1,7 +1,7 @@
 /*
  * DEXTRO DASH 2000 - ramme omkring den spilbare canvas-prototype.
- * Spillets logiske koordinater er 320 x 200, men canvas tegnes internt i
- * 1280 x 800 pixels med glat billedskalering, så rasterfigurer og tekst er skarpe.
+ * Canvas tegnes internt i 1920 x 1080 og vises i 16:9 uden at strække figurer.
+ * Browserens højde og bredde begrænser størrelsen, så lyd og tips altid er synlige.
  */
 
 :root {
@@ -27,7 +27,8 @@ body {
 body {
     display: grid;
     place-items: center;
-    overflow: hidden;
+    min-height: 100dvh;
+    overflow-x: hidden;
     background:
         radial-gradient(circle at 50% 36%, #3a2b79 0, #171037 38%, #080615 78%),
         #080615;
@@ -36,14 +37,15 @@ body {
 }
 
 .game-page {
-    width: min(96vw, 1080px);
+    /* Reservér også plads til læsbare tips nedenunder selve banen. */
+    width: min(98vw, 1920px, calc((100dvh - 144px) * 16 / 9));
     padding: 18px;
 }
 
 .game-cabinet {
     position: relative;
     width: 100%;
-    aspect-ratio: 8 / 5;
+    /* Det indre canvas bestemmer højden; kabinetkanten må ikke strække 16:9. */
     overflow: hidden;
     border: clamp(5px, 1vw, 12px) solid var(--cabinet);
     border-radius: 14px;
@@ -60,6 +62,20 @@ body {
     justify-content: flex-end;
     gap: 10px;
     padding-top: 14px;
+    align-items: center;
+    min-height: 76px;
+}
+
+/* Faste tips under spillefladen dækker ikke DEX, fjender eller landingssteder. */
+.game-hint {
+    flex: 1;
+    margin: 0 auto 0 0;
+    padding: 8px 10px;
+    border-left: 3px solid #70e7f5;
+    background: #10162b;
+    color: #effaff;
+    font: 700 clamp(11px, 1.05vw, 16px)/1.4 "Courier New", monospace;
+    white-space: pre-line;
 }
 
 .sound-toggle {
@@ -88,7 +104,7 @@ body {
 #gameCanvas {
     display: block;
     width: 100%;
-    height: 100%;
+    height: auto;
     outline: 0;
     background: #5e4ac7;
     image-rendering: auto;
@@ -384,7 +400,7 @@ body {
     .game-page {
         /* På lave landskabsskærme reserveres plads til lydknappen, så hverken
            spillefeltet eller knappen beskæres af browserkanten. */
-        width: min(100vw, calc(160vh - 72px));
+        width: min(100vw, calc((100dvh - 126px) * 16 / 9));
         padding: 0;
     }
 

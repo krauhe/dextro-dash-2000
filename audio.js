@@ -61,6 +61,8 @@ class GlucoseRunnerAudio {
 
     setEffectsEnabled(enabled) {
         this.effectsEnabled = Boolean(enabled);
+        // Sluk også allerede planlagte alarmtoner, ikke kun fremtidige kald.
+        if (this.effectsBus) this.effectsBus.gain.value = this.effectsEnabled ? 0.90 : 0;
     }
 
     isChannelEnabled(channel) {
@@ -235,6 +237,21 @@ class GlucoseRunnerAudio {
         this.tone(79, 0.06, 'square', 0.07);
         this.tone(83, 0.06, 'square', 0.065, 0.05);
         this.tone(88, 0.11, 'triangle', 0.055, 0.10);
+    }
+
+    lowBGAlarm() {
+        // Tre korte, lyse faldende toner: tydeligt anderledes end høj-signalet.
+        if (!this.effectsEnabled) return;
+        [79, 76, 72].forEach((note, index) => {
+            this.tone(note, 0.10, 'triangle', 0.075, index * 0.14);
+        });
+    }
+
+    highBGAlarm() {
+        // Et roligere par i et lavere register, kun på effektkanalen.
+        if (!this.effectsEnabled) return;
+        this.tone(55, 0.20, 'triangle', 0.08);
+        this.tone(60, 0.24, 'sine', 0.08, 0.29);
     }
 
     eat() {

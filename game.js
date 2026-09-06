@@ -19,10 +19,13 @@
     const liveStatus = document.getElementById('liveStatus');
     const musicToggle = document.getElementById('musicToggle');
     const soundToggle = document.getElementById('soundToggle');
+    const gameHint = document.getElementById('gameHint');
 
-    const SCREEN_WIDTH = 320;
+    // 200 logiske højdepixels bevarer banernes fysik. Den bredere 16:9-visning
+    // viser mere af banen uden at strække figurer eller ændre springlængder.
+    const SCREEN_WIDTH = 200 * 16 / 9;
     const SCREEN_HEIGHT = 200;
-    const RENDER_SCALE = 4;
+    const RENDER_SCALE = 1080 / SCREEN_HEIGHT;
     const HUD_HEIGHT = 32;
     const FIXED_STEP_SECONDS = 1 / 60;
     const SIMULATION_MINUTES_PER_REAL_SECOND = 4;
@@ -31,16 +34,17 @@
     const POINTS_PER_DIAMOND = 100;
     const BONUS_TALLY_SECONDS_PER_ROW = 0.95;
     const BONUS_TALLY_TICKS_PER_ROW = 14;
-    const TIR_MIN_MMOL_L = 3.9;
-    const TIR_MAX_MMOL_L = 10;
+    const BG_GREEN_MIN_MMOL_L = 3.9;
+    const BG_GREEN_MAX_MMOL_L = 10;
+    const DEX_PROFILE = Object.freeze({ weight: 70, isf: 3, icr: 10 });
     // Høj BG giver ikke længere Game Over. Over målområdet bliver monsteret
-    // i stedet gradvist døsigere. Effekten glider ind mellem 10 og 18 mmol/L
-    // og forbliver på maksimum over 18, så styringen aldrig bliver helt låst.
+    // i stedet lineært døsigere mellem 10 og 19 mmol/L. Over 19 fastholdes
+    // minimumsfaktorerne; der tilføjes ikke en automatisk redningsmekanik.
     const HIGH_BG_FATIGUE_START_MMOL_L = 10;
-    const HIGH_BG_FATIGUE_FULL_MMOL_L = 18;
+    const HIGH_BG_FATIGUE_FULL_MMOL_L = 19;
     const HIGH_BG_MIN_SPEED_FACTOR = 0.50;
     const HIGH_BG_MIN_ACCELERATION_FACTOR = 0.42;
-    const HIGH_BG_MIN_JUMP_FACTOR = 0.68;
+    const HIGH_BG_MIN_JUMP_HEIGHT_FACTOR = 0.46;
     const PLAYER_WIDTH = 17;
     const PLAYER_HEIGHT = 23;
     const PLAYER_START_X = 34;
@@ -54,6 +58,8 @@
     const PIZZA_GROUND_OFFSET = 3.5;
     const GRAVITY = 520;
     const JUMP_SPEED = -218;
+    // Ved tidligt slip begrænses opstigningen; holdt tast bevarer det fulde hop.
+    const SHORT_JUMP_SPEED_FACTOR = 0.45;
     const ENEMY_BOUNCE_SPEED = -255;
     const MAX_RUN_SPEED = 88;
     const RUN_ACCELERATION = 560;
@@ -76,14 +82,14 @@
     // pumpe. En pause mellem doserne gør automatikken aflæselig og forhindrer,
     // at alle tre lagerpladser tømmes i samme frame over tærsklen.
     const AUTO_PUMP_TRIGGER_BG_MMOL_L = 7;
-    const AUTO_PUMP_DOSE_COOLDOWN_SECONDS = 5;
+    const AUTO_PUMP_DOSE_COOLDOWN_SECONDS = 8;
     // En klassisk attract loop skifter automatisk mellem titel, credits og en
     // kort computerstyret bane, når ingen spiller rører tastaturet.
     const ATTRACT_TITLE_SECONDS = 8;
     const ATTRACT_CREDITS_SECONDS = 6;
     const ATTRACT_DEMO_SECONDS = 16;
     const DEMO_JUMP_INTERVAL_SECONDS = 1.45;
-    const PIZZA_THROW_WINDUP_SECONDS = 0.7;
+    const PIZZA_THROW_WINDUP_SECONDS = 1.4;
     const PIZZA_THROW_MIN_COOLDOWN_SECONDS = 3.6;
     const PIZZA_THROW_COOLDOWN_VARIATION_SECONDS = 1.8;
     const PIZZA_THROW_RANGE = 240;
@@ -151,11 +157,9 @@
         },
     };
 
-    // Spillet beholder sine enkle 320 x 200-logiske koordinater, men tegnes på
-    // et 4 gange større backing-canvas. Det giver skarpe billeder og tekst uden
-    // at ændre banens fysik eller alle dens koordinater.
-    canvas.width = SCREEN_WIDTH * RENDER_SCALE;
-    canvas.height = SCREEN_HEIGHT * RENDER_SCALE;
+    // Ægte Full HD-tegneflade. CSS skalerer til vinduet med samme 16:9-forhold.
+    canvas.width = 1920;
+    canvas.height = 1080;
     context.setTransform(RENDER_SCALE, 0, 0, RENDER_SCALE, 0, 0);
     context.imageSmoothingEnabled = true;
 
@@ -177,7 +181,14 @@
         autoPump: new Image(),
     };
     pickupImages.insulin.src = 'assets/insulin-pen.png';
-    pickupImages.candy.src = 'assets/candy-unwrapped-red-white.png';
+    pickupImages.candy.src = 'assets/candy-spin-16.png';
+    // Begge samleobjekter gennemløber 16 frames på ét sekund.
+    const PICKUP_ANIMATION_FPS = 16;
+    const PICKUP_ANIMATION_FRAMES = 16;
+
+    function getPickupAnimationFrame(seconds, offset = 0) {
+        return Math.floor(seconds * PICKUP_ANIMATION_FPS + offset) % PICKUP_ANIMATION_FRAMES;
+    }
     pickupImages.pump.src = 'assets/insulin-pump.png';
     pickupImages.autoPump.src = 'assets/insulin-pump-auto.png?v=backpack-1';
 
@@ -202,7 +213,7 @@
     characterImages.eat.src = 'assets/player-monster-eat.png?v=opaque-1';
     characterImages.devour.src = 'assets/player-monster-devour.png?v=1';
     characterImages.pumpOverlay.src = 'assets/player-pump-overlay.png?v=1';
-    characterImages.cgmOverlay.src = 'assets/player-cgm-overlay.png?v=1';
+    characterImages.cgmOverlay.src = 'assets/player-cgm-round.png';
     characterImages.drowsyMouthOverlay.src =
         'assets/player-drowsy-mouth-overlay.png?v=1';
     characterImages.cake.src = 'assets/cake-monster.png';
@@ -240,8 +251,10 @@
     let pumpHintShown = false;
     let autoPumpHintShown = false;
     let remainingTimeSeconds = LEVEL_TIME_SECONDS;
-    let tirObservedSeconds = 0;
-    let tirInRangeSeconds = 0;
+    let bgAlarmZone = 'normal';
+    let bgAlarmCooldownSeconds = 0;
+    let activeHint = null;
+    let hintQueue = [];
     let physiologyEngine = null;
     let physiologyState = null;
     let elapsedRealSeconds = 0;
@@ -276,6 +289,9 @@
         runAnimationDistance: 0,
         eatAnimationTime: 0,
         eatAnticipation: 0,
+        candyUseTime: 0,
+        insulinUseTime: 0,
+        insulinUseSource: 'pen',
     };
 
     function getCurrentLevel() {
@@ -299,13 +315,7 @@
             ffaResistance: 1,
         };
 
-        const profile = {
-            weight: 70,
-            isf: 3,
-            icr: 10,
-        };
-
-        const engine = T1DPhysiologyEngine.createEngine(profile, {
+        const engine = T1DPhysiologyEngine.createEngine(DEX_PROFILE, {
             steadyState: false,
             noise: false,
             seed: 1987,
@@ -367,8 +377,10 @@
             autoPumpHintShown = false;
         }
         remainingTimeSeconds = LEVEL_TIME_SECONDS;
-        tirObservedSeconds = 0;
-        tirInRangeSeconds = 0;
+        bgAlarmZone = 'normal';
+        bgAlarmCooldownSeconds = 0;
+        activeHint = null;
+        hintQueue = [];
         cameraX = 0;
         elapsedRealSeconds = 0;
         lastBGSampleTime = 0;
@@ -394,12 +406,16 @@
             vx: 0,
             vy: 0,
             onGround: true,
+            jumpCanBeShortened: false,
             facing: 1,
             invulnerableTime: 1.2,
             animationTime: 0,
             runAnimationDistance: 0,
             eatAnimationTime: 0,
             eatAnticipation: 0,
+            candyUseTime: 0,
+            insulinUseTime: 0,
+            insulinUseSource: 'pen',
         });
         resetPlayerTail();
     }
@@ -432,9 +448,9 @@
         const bg = getGameBG();
         // BG påvirker kun halens opdrift. CGM-sensoren på kinden viser nu
         // alarmfarven; selve halens farver er derfor altid de samme.
-        const verticalAcceleration = bg < TIR_MIN_MMOL_L
+        const verticalAcceleration = bg < BG_GREEN_MIN_MMOL_L
             ? 95
-            : bg > TIR_MAX_MMOL_L ? -72 : 18;
+            : bg > BG_GREEN_MAX_MMOL_L ? -72 : 18;
 
         tailSegments[0].x = anchor.x;
         tailSegments[0].y = anchor.y;
@@ -457,9 +473,9 @@
             // slæber efter ved acceleration og svinger igennem ved vending.
             const preferredX = anchor.x
                 - player.facing * TAIL_SEGMENT_LENGTH * index;
-            const bgCurve = bg < TIR_MIN_MMOL_L
+            const bgCurve = bg < BG_GREEN_MIN_MMOL_L
                 ? index * 0.34
-                : bg > TIR_MAX_MMOL_L ? -index * 0.30 : index * 0.05;
+                : bg > BG_GREEN_MAX_MMOL_L ? -index * 0.30 : index * 0.05;
             const preferredY = anchor.y + bgCurve;
             segment.x += (preferredX - segment.x) * TAIL_DIRECTIONAL_STIFFNESS;
             segment.y += (preferredY - segment.y) * TAIL_DIRECTIONAL_STIFFNESS * 0.7;
@@ -720,11 +736,24 @@
     function jump() {
         if (gameState !== 'playing' || !player.onGround) return;
         const highBGFatigue = getHighBGFatigue();
-        const jumpFactor = 1
-            - highBGFatigue * (1 - HIGH_BG_MIN_JUMP_FACTOR);
-        player.vy = JUMP_SPEED * jumpFactor;
+        const jumpHeightFactor = 1
+            - highBGFatigue * (1 - HIGH_BG_MIN_JUMP_HEIGHT_FACTOR);
+        // Hoppehøjden er proportional med starthastighedens kvadrat. Roden
+        // gør selve højden lineær i BG, ikke kun den indledende hastighed.
+        player.vy = JUMP_SPEED * Math.sqrt(jumpHeightFactor);
+        player.shortJumpSpeed = player.vy * SHORT_JUMP_SPEED_FACTOR;
+        player.jumpCanBeShortened = true;
         player.onGround = false;
         audio.jump();
+    }
+
+    function releaseJump() {
+        // Kun almindelige hop kan afkortes, ikke fjendespring eller dødsanimation.
+        // En hastighedsgrænse giver gradvist højere hop jo senere tasten slippes.
+        if (gameState === 'playing' && player.jumpCanBeShortened && player.vy < 0) {
+            player.vy = Math.max(player.vy, player.shortJumpSpeed);
+        }
+        player.jumpCanBeShortened = false;
     }
 
     function useCandy() {
@@ -732,8 +761,7 @@
             if (gameState === 'playing') setMessage('NO CANDY', 0.7);
             return false;
         }
-        candyStock -= 1;
-        physiologyEngine.addFood({
+        const accepted = physiologyEngine.addFood({
             carbs: 10,
             weight: 10,
             eatTimeMin: 0.5,
@@ -743,6 +771,13 @@
                 retentionFactor: 1,
             },
         });
+        if (!accepted) {
+            setMessage('DEX IS FULL', 0.9);
+            return false;
+        }
+        candyStock -= 1;
+        player.candyUseTime = 0.9;
+        player.eatAnimationTime = EAT_ANIMATION_SECONDS;
         score += 50;
         setMessage('10g SUGAR', 0.8);
         spawnParticles(player.x + 6, player.y + 8, '#ffb13b');
@@ -766,11 +801,19 @@
         }
 
         pumpInsulinStored -= 1;
-        physiologyEngine.addRapidInsulin({ units: 1 });
+        deliverInsulin('pump');
         setMessage('PUMP 1 U', 0.8);
         spawnParticles(player.x + PLAYER_WIDTH / 2, player.y + 8, '#70f4ff', 8);
-        audio.insulin();
         return true;
+    }
+
+    // Én indgang til en faktisk dosis: lageropsamling må ikke starte denne
+    // animation. Effekten vises på DEX, også hvis pen-pickup sker ved fuldt lager.
+    function deliverInsulin(source) {
+        physiologyEngine.addRapidInsulin({ units: 1 });
+        player.insulinUseTime = 1;
+        player.insulinUseSource = source;
+        audio.insulin();
     }
 
     function updateAutoPump(deltaSeconds) {
@@ -791,25 +834,44 @@
             return;
         }
 
+        // Kun en intern controller for DEX' faste, fiktive spilprofil. Dette
+        // er ikke en klinisk pumpealgoritme eller et dosisforslag til spilleren.
+        // Fratræk allerede givet hurtiginsulin, og genberegn efter hver pause;
+        // der gemmes aldrig en plan om at affyre flere doser i rækkefølge.
+        const activeInsulin = Math.max(0, physiologyState.displayIOB ?? physiologyState.iob ?? 0);
+        const remainingCarbs = Math.max(0, physiologyState.cob || 0);
+        const simulatedDemand = (getGameBG() - AUTO_PUMP_TRIGGER_BG_MMOL_L) / DEX_PROFILE.isf
+            + remainingCarbs / DEX_PROFILE.icr - activeInsulin;
+        if (!Number.isFinite(simulatedDemand) || simulatedDemand < 1) return;
+
         pumpInsulinStored -= 1;
         autoPumpCooldownSeconds = AUTO_PUMP_DOSE_COOLDOWN_SECONDS;
-        physiologyEngine.addRapidInsulin({ units: 1 });
+        deliverInsulin('pump');
         setMessage('AUTO PUMP 1 U', 0.9);
         spawnParticles(player.x + 3, player.y + 9, '#ffbd45', 10);
-        audio.insulin();
     }
 
     function setMessage(text, duration) {
+        if (text.startsWith('HINT:')) {
+            const hint = { text: text.replace(/^HINT:\s*/, ''), remaining: Math.max(12, duration) };
+            if (!activeHint) activeHint = hint;
+            else hintQueue.push(hint);
+            return;
+        }
         message = text;
-        // Førstegangs-hints skal kunne læses midt i bevægelsen. De korte
-        // arkadelabels beholder deres oprindelige tempo, mens HINT-linjer får
-        // mindst 5 sekunder i et fast felt nederst på skærmen.
-        messageDuration = text.startsWith('HINT:') ? Math.max(duration, 5) : duration;
+        // Korte hændelser har eget spor og kan aldrig afbryde et betjeningstip.
+        messageDuration = duration;
         messageTime = messageDuration;
         // Korte hændelsestekster fastholdes dér, hvor hændelsen skete. De
         // bliver derfor ikke ved med at følge DEX gennem banen.
         messageAnchorX = player.x - cameraX + PLAYER_WIDTH / 2;
         messageAnchorY = HUD_HEIGHT + player.y - 5;
+    }
+
+    function updateHints(deltaSeconds) {
+        if (!activeHint) return;
+        activeHint.remaining -= deltaSeconds;
+        if (activeHint.remaining <= 0) activeHint = hintQueue.shift() || null;
     }
 
     function loseLife(reason, ignoreInvulnerability = false) {
@@ -877,18 +939,15 @@
         }
         const hasNextLevel = currentLevelIndex < levels.length - 1;
         const timeBonus = Math.floor(remainingTimeSeconds) * POINTS_PER_REMAINING_SECOND;
-        const tirFraction = getTIRFraction();
-        const tirPercent = Math.round(tirFraction * 100);
-        const tirBonus = Math.round(timeBonus * tirFraction);
         const diamondBonus = collectedDiamondCount * POINTS_PER_DIAMOND;
 
-        // Bonusserne gemmes som tre regnskabslinjer og føres først ind i den
+        // Bonusserne gemmes som to regnskabslinjer og føres først ind i den
         // faktiske score, mens optællingen kører. Derfor tikker både HUD'en,
         // hver enkelt linje og TOTAL frem med præcis de samme heltal.
         stageClearTally = {
             hasNextLevel,
             scoreBefore: score,
-            finalScore: score + timeBonus + tirBonus + diamondBonus,
+            finalScore: score + timeBonus + diamondBonus,
             activeRowIndex: 0,
             rowElapsedSeconds: 0,
             lastTickIndex: -1,
@@ -896,11 +955,6 @@
                 {
                     label: `TIME ${Math.floor(remainingTimeSeconds)} x ${POINTS_PER_REMAINING_SECOND}`,
                     value: timeBonus,
-                    displayedValue: 0,
-                },
-                {
-                    label: `TIR ${tirPercent}%`,
-                    value: tirBonus,
                     displayedValue: 0,
                 },
                 {
@@ -912,9 +966,7 @@
         };
         gameState = 'bonus-counting';
         showOverlay(
-            hasNextLevel
-                ? `STAGE ${currentLevelIndex + 1} CLEAR!`
-                : `LEVEL ${currentLevelIndex + 1} COMPLETED`,
+            `LEVEL ${currentLevelIndex + 1} COMPLETED`,
             '',
             'COUNTING BONUS...',
         );
@@ -982,30 +1034,23 @@
         ].join('\n');
     }
 
-    function getTIRFraction() {
-        if (tirObservedSeconds <= 0) return 1;
-        return clamp(tirInRangeSeconds / tirObservedSeconds, 0, 1);
-    }
-
     // Arkadespillet bruger altid modellens sande blodglukose. CGM-signalet
     // findes fortsat internt i fysiologimotoren, men dets forsinkelse og
-    // eventuelle sensorstøj må ikke påvirke HUD, trendpil, TIR eller point.
+    // eventuelle sensorstøj må ikke påvirke HUD, trendpil eller gameplay.
     function getGameBG() {
         return physiologyState && Number.isFinite(physiologyState.trueBG)
             ? physiologyState.trueBG
             : 9;
     }
 
-    // Smoothstep-kurven gør overgangen mærkbar uden et pludseligt temposkift,
-    // når BG netop passerer toppen af målområdet. Resultatet er altid 0-1.
+    // Lineær degradering: 10 = ingen, 14,5 = halvdelen, 19 = fuld svækkelse.
     function getHighBGFatigue() {
-        const linearFatigue = clamp(
+        return clamp(
             (getGameBG() - HIGH_BG_FATIGUE_START_MMOL_L)
                 / (HIGH_BG_FATIGUE_FULL_MMOL_L - HIGH_BG_FATIGUE_START_MMOL_L),
             0,
             1,
         );
-        return linearFatigue * linearFatigue * (3 - 2 * linearFatigue);
     }
 
     function handleKeyDown(event) {
@@ -1058,7 +1103,7 @@
             || key === 'arrowright'
             || key === 'arrowup'
             || key === 'arrowdown';
-        if (canStartOrRestart && isStartKey) {
+        if (canStartOrRestart && isStartKey && !event.repeat) {
             if (gameState === 'life-lost') {
                 respawn();
             } else if (gameState === 'won' && currentLevelIndex < levels.length - 1) {
@@ -1088,6 +1133,7 @@
 
     function handleKeyUp(event) {
         const key = event.key.toLowerCase();
+        if (key === 'arrowup' || key === ' ') releaseJump();
         if (key === 'arrowleft') keys.left = false;
         if (key === 'arrowright') keys.right = false;
     }
@@ -1095,6 +1141,7 @@
     window.addEventListener('keydown', handleKeyDown, { passive: false });
     window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('blur', () => {
+        releaseJump();
         keys.left = false;
         keys.right = false;
     });
@@ -1146,8 +1193,11 @@
         }
         player.animationTime += deltaSeconds;
         player.eatAnimationTime = Math.max(0, player.eatAnimationTime - deltaSeconds);
+        player.candyUseTime = Math.max(0, player.candyUseTime - deltaSeconds);
+        player.insulinUseTime = Math.max(0, player.insulinUseTime - deltaSeconds);
         player.invulnerableTime = Math.max(0, player.invulnerableTime - deltaSeconds);
         messageTime = Math.max(0, messageTime - deltaSeconds);
+        updateHints(deltaSeconds);
 
         updatePlayer(deltaSeconds);
         updatePlayerTail(deltaSeconds);
@@ -1228,6 +1278,7 @@
                 player.y = platform.y - PLAYER_HEIGHT;
                 player.vy = 0;
                 player.onGround = true;
+                player.jumpCanBeShortened = false;
                 return;
             }
         }
@@ -1284,6 +1335,7 @@
                 // Et præcist tramp fungerer som et super-hop. Figuren placeres
                 // oven på fjenden før afsættet, så den ikke starter inde i den.
                 player.y = enemy.y - PLAYER_HEIGHT;
+                player.jumpCanBeShortened = false;
                 player.vy = enemy.fizzState === 'shaking'
                     ? FIZZ_SHAKE_BOUNCE_SPEED
                     : ENEMY_BOUNCE_SPEED;
@@ -1382,17 +1434,19 @@
         const playerCenterX = player.x + PLAYER_WIDTH / 2;
         if (Math.abs(playerCenterX - enemyCenterX) > PIZZA_THROW_RANGE) return;
 
-        // Monsteret vender sig mod spilleren, stopper og viser osteklumpen i
-        // 0,7 sekunder. Retningen låses under optrækket, så kastet kan forudses.
+        // Monsteret stopper og sigter i 1,4 sekunder. Målet låses allerede nu,
+        // så spilleren kan undvige under optrækket uden at blive fulgt af sigtet.
         enemy.direction = playerCenterX >= enemyCenterX ? 1 : -1;
+        enemy.cheeseTargetX = playerCenterX;
+        enemy.cheeseTargetY = player.y + PLAYER_HEIGHT / 2;
         enemy.cheeseWindupTime = PIZZA_THROW_WINDUP_SECONDS;
     }
 
     function launchCheeseProjectile(enemy) {
         const startX = enemy.x + enemy.width / 2 + enemy.direction * 11;
         const startY = enemy.y + 8;
-        const targetX = player.x + PLAYER_WIDTH / 2;
-        const targetY = player.y + PLAYER_HEIGHT / 2;
+        const targetX = enemy.cheeseTargetX;
+        const targetY = enemy.cheeseTargetY;
         const deltaX = targetX - startX;
         const deltaY = targetY - startY;
         const flightSeconds = clamp(Math.abs(deltaX) / 105, 0.72, 1.35);
@@ -1493,11 +1547,6 @@
             if (item.collected || !rectanglesOverlap(player.x, player.y, PLAYER_WIDTH,
                 PLAYER_HEIGHT, item.x - 11, item.y - 11, 22, 22)) continue;
 
-            if (item.type === 'insulin' && pumpActive && pumpInsulinStored >= 3) {
-                setMessage('PUMP FULL', 0.55);
-                continue;
-            }
-
             item.collected = true;
             score += 100;
             if (item.type === 'autoPump') {
@@ -1509,7 +1558,7 @@
                 // Auto-pumpen er en opgradering. Eventuelle doser i den
                 // manuelle pumpe flyttes med over i rygsækkens tre pladser.
                 if (!autoPumpHintShown) {
-                    setMessage('HINT: AUTO PUMP USES 1 U ABOVE BG 7', 3.2);
+                    setMessage('HINT: AUTO PUMP: Stores 3 pens and gives DEX insulin automatically.\nWhen full, extra pens are used immediately!', 12);
                     autoPumpHintShown = true;
                 } else {
                     setMessage('AUTO PUMP READY', 0.9);
@@ -1517,20 +1566,25 @@
                 spawnParticles(item.x, item.y, '#ffbd45', 14);
                 audio.pickup();
             } else if (item.type === 'pump') {
+                // At løbe tilbage til en gammel pumpe må ikke nedgradere
+                // rygsækken eller kassere de doser, der allerede er samlet.
+                if (pumpActive) {
+                    setMessage('PUMP ALREADY EQUIPPED', 0.8);
+                    audio.pickup();
+                    continue;
+                }
                 startHUDPickupFlight('pump', item.x, item.y, 123, 23);
                 pumpActive = true;
-                autoPumpActive = false;
                 pumpHUDUnlocked = true;
-                pumpInsulinStored = 0;
                 if (!pumpHintShown) {
-                    setMessage('HINT: PRESS "Z" TO USE INSULIN FROM THE PUMP', 3.2);
+                    setMessage('HINT: MANUAL PUMP: Stores 3 pens for later. Press "Z": DEX uses one dose.\nWhen full, extra pens are used immediately!', 12);
                     pumpHintShown = true;
                 } else {
                     setMessage('PUMP READY', 0.8);
                 }
                 spawnParticles(item.x, item.y, '#70f4ff', 12);
                 audio.pickup();
-            } else if (item.type === 'insulin' && pumpActive) {
+            } else if (item.type === 'insulin' && pumpActive && pumpInsulinStored < 3) {
                 // Lagerpladsen beregnes før tælleren hæves, så pennen flyver
                 // direkte ind i den første, anden eller tredje tomme ramme.
                 startHUDPickupFlight(
@@ -1549,16 +1603,15 @@
                 // Uden pumpen gives dosis straks. Flyveturen ender derfor ved
                 // IOB-tallet i stedet for i en lagerplads.
                 startHUDPickupFlight('insulin', item.x, item.y, 299, 48);
-                physiologyEngine.addRapidInsulin({ units: 1 });
-                setMessage('1 U INSULIN', 0.8);
+                deliverInsulin('pen');
+                setMessage(pumpActive ? 'FULL PACK: 1 U USED' : '1 U INSULIN', 0.8);
                 spawnParticles(item.x, item.y, '#79efff');
-                audio.insulin();
             } else {
                 startHUDPickupFlight('candy', item.x, item.y, 123, 8, true);
                 candyStock += 1;
                 candyHUDUnlocked = true;
                 if (!candyHintShown) {
-                    setMessage('HINT: PRESS "A" TO USE CANDY AND RAISE BLOOD SUGAR', 3.2);
+                    setMessage('HINT: Press "A": DEX eats one stored candy.\nCandy raises DEX\'s blood sugar; collecting it only stores it.', 12);
                     candyHintShown = true;
                 } else {
                     setMessage('+1 CANDY', 0.65);
@@ -1574,6 +1627,8 @@
             diamond.collected = true;
             collectedDiamondCount += 1;
             spawnParticles(diamond.x, diamond.y, '#67f5ff', 7);
+            // Vis optjent slutbonus uden at lægge den i scoren to gange.
+            spawnScoreParticle(diamond.x, diamond.y, POINTS_PER_DIAMOND, ' BONUS');
             audio.pickup();
         }
     }
@@ -1582,13 +1637,10 @@
         physiologyEngine.step(deltaSeconds * SIMULATION_MINUTES_PER_REAL_SECOND);
         physiologyState = physiologyEngine.getState();
 
-        // TIR, HUD og trendpil deler den samme sande BG-værdi. Der er derfor
+        // HUD, alarmer og trendpil deler den samme sande BG-værdi. Der er derfor
         // hverken CGM-forsinkelse eller sensorstøj i arkadespillets feedback.
         const gameBG = getGameBG();
-        tirObservedSeconds += deltaSeconds;
-        if (gameBG >= TIR_MIN_MMOL_L && gameBG <= TIR_MAX_MMOL_L) {
-            tirInRangeSeconds += deltaSeconds;
-        }
+        updateBGAlarms(deltaSeconds);
 
         if (elapsedRealSeconds - lastBGSampleTime >= 0.5) {
             lastBGSampleTime = elapsedRealSeconds;
@@ -1597,6 +1649,26 @@
         }
 
         if (physiologyState.trueBG < 2.8) loseLife('LOW BLOOD SUGAR');
+    }
+
+    // Spilsignaler, ikke medicinske alarmer. Hysterese omkring grænserne
+    // forhindrer gentagne startlyde, når BG ligger og vipper ved en grænse.
+    function updateBGAlarms(deltaSeconds) {
+        if (gameState !== 'playing' || demoMode) return;
+        const bg = getGameBG();
+        let nextZone = bg < BG_GREEN_MIN_MMOL_L ? 'low'
+            : bg > BG_GREEN_MAX_MMOL_L ? 'high' : 'normal';
+        if (bgAlarmZone === 'low' && bg < 4.2) nextZone = 'low';
+        if (bgAlarmZone === 'high' && bg > 9.7 && nextZone !== 'low') nextZone = 'high';
+        if (nextZone !== bgAlarmZone) {
+            bgAlarmZone = nextZone;
+            bgAlarmCooldownSeconds = 0;
+        }
+        bgAlarmCooldownSeconds = Math.max(0, bgAlarmCooldownSeconds - deltaSeconds);
+        if (bgAlarmZone === 'normal' || bgAlarmCooldownSeconds > 0) return;
+        if (bgAlarmZone === 'low') audio.lowBGAlarm();
+        else audio.highBGAlarm();
+        bgAlarmCooldownSeconds = bgAlarmZone === 'low' ? 3 : 5.5;
     }
 
     function updateCamera() {
@@ -1626,7 +1698,7 @@
         }
     }
 
-    function spawnScoreParticle(x, y, points) {
+    function spawnScoreParticle(x, y, points, suffix = '') {
         // Pointtallet bruger samme partikelliste som eksplosionsskyen. Det
         // bliver stående længe nok til at kunne læses og flyder derefter op.
         particles.push({
@@ -1638,7 +1710,7 @@
             life: 0.85,
             maximumLife: 0.85,
             color: '#fff39a',
-            text: `+${points}`,
+            text: `+${points}${suffix}`,
         });
     }
 
@@ -1741,8 +1813,8 @@
     function render() {
         drawBackground();
         context.save();
-        // Kameraet må beholde sine decimaler. Canvas skaleres 4 gange, så en
-        // afrunding her gav synlige spring på 4 fysiske pixels i alle lag.
+        // Kameraet beholder decimalerne. Med Full HD-skalaen ville afrunding
+        // til logiske pixels give synlige spring i alle parallaxlag.
         context.translate(-cameraX, HUD_HEIGHT);
         drawLevel();
         drawFinish();
@@ -1752,6 +1824,7 @@
         drawCheeseProjectiles();
         drawPlayer();
         drawEatenEnemyInMouth();
+        drawPlayerActionEffects();
         drawParticles();
         context.restore();
         drawVerticalBGIndicator();
@@ -1830,37 +1903,92 @@
     }
 
     function drawLevel() {
-        for (const platform of getCurrentLevel().platforms) {
-            context.fillStyle = '#163d43';
-            context.fillRect(platform.x, platform.y, platform.width, platform.height);
-            context.fillStyle = '#42c576';
-            context.fillRect(platform.x, platform.y, platform.width, 4);
-            context.fillStyle = '#89ee83';
-            context.fillRect(platform.x, platform.y, platform.width, 2);
-            context.fillStyle = '#28616a';
-            for (let x = platform.x + 4; x < platform.x + platform.width; x += 12) {
-                // Den sidste dekorationsstreg kan ligge tættere på platformens
-                // højre kant end sin normale bredde. Afkort den dér, så den
-                // aldrig bliver tegnet ude i luften ved siden af jordstykket.
-                const upperDashWidth = Math.min(7, platform.x + platform.width - x);
-                context.fillRect(x, platform.y + 7, upperDashWidth, 3);
-
-                if (platform.height > 15) {
-                    const lowerDashX = x + 4;
-                    const lowerDashWidth = Math.min(
-                        6,
-                        platform.x + platform.width - lowerDashX,
-                    );
-                    if (lowerDashWidth > 0) {
-                        context.fillRect(lowerDashX, platform.y + 15, lowerDashWidth, 3);
-                    }
-                }
+        // Afgrundene starter ved den synlige jordkant. Tegn kun i hullerne,
+        // før platformene, så markeringen hverken lander under canvas eller
+        // mørklægger de solide jordstykker.
+        const ground = getCurrentLevel().platforms
+            .filter(platform => platform.y === getCurrentLevel().groundY)
+            .slice().sort((a, b) => a.x - b.x);
+        let groundEnd = 0;
+        context.fillStyle = '#0b1024';
+        for (const platform of ground) {
+            if (platform.x > groundEnd) {
+                context.fillRect(groundEnd, getCurrentLevel().groundY,
+                    platform.x - groundEnd, SCREEN_HEIGHT - HUD_HEIGHT - getCurrentLevel().groundY);
             }
+            groundEnd = Math.max(groundEnd, platform.x + platform.width);
+        }
+        for (const platform of getCurrentLevel().platforms) {
+            drawEarthPlatform(platform);
         }
 
-        // Mørke felter under hullerne gør afgrunden tydelig på den lyse baggrund.
-        context.fillStyle = '#11122e';
-        context.fillRect(0, 176, getCurrentLevel().width, 30);
+    }
+
+    function drawEarthPlatform(platform) {
+        const { x, y, width, height } = platform;
+        if (x + width < cameraX || x > cameraX + SCREEN_WIDTH) return;
+        context.save();
+        // Alt bliver inde i kollisionsrektanglet. Ingen rødder eller tekstur
+        // kan flyde ud over højrekanten eller skjule et hul mellem plateauer.
+        context.beginPath();
+        context.rect(x, y, width, height);
+        context.clip();
+        const soil = context.createLinearGradient(0, y, 0, y + height);
+        soil.addColorStop(0, '#75523c');
+        soil.addColorStop(0.4, '#533a32');
+        soil.addColorStop(1, '#292936');
+        context.fillStyle = soil;
+        context.fillRect(x, y, width, height);
+
+        // Faste verdenskoordinater giver samme detaljer ved tilbageløb.
+        // Kun synlige felter tegnes; kameraet må aldrig styre deres mønster.
+        const firstTile = Math.max(0, Math.floor((cameraX - x) / 12));
+        const lastTile = Math.min(Math.ceil(width / 12), Math.ceil((cameraX + SCREEN_WIDTH - x) / 12));
+        for (let tile = firstTile; tile < lastTile; tile++) {
+            const tx = x + tile * 12;
+            const seed = Math.abs(Math.sin(tile * 12.9898 + x * 0.17 + y) * 43758.5453) % 1;
+            // Ujævn moskant under en ubrudt, let aflæselig landingsoverflade.
+            context.fillStyle = '#246149';
+            context.fillRect(tx, y + 2, 12, 2 + seed * 2);
+            context.fillStyle = '#399453';
+            context.fillRect(tx + 1, y + 2, 3 + seed * 4, 2);
+            context.strokeStyle = '#a58254';
+            context.lineWidth = 0.45;
+            context.beginPath();
+            context.moveTo(tx + 4, y + 4);
+            context.lineTo(tx + 3 + seed * 3, y + 7);
+            context.lineTo(tx + 5, y + Math.min(height - 1, 10 + seed * 5));
+            context.moveTo(tx + 4, y + 7);
+            context.lineTo(tx + 7, y + 8);
+            context.stroke();
+            for (let row = 0; row < Math.ceil(height / 6); row++) {
+                const sy = y + 6 + row * 6 + seed * 1.5;
+                const sx = tx + 7 + Math.sin(tile + row * 3) * 2;
+                context.fillStyle = row % 2 ? '#72645a' : '#8b7961';
+                context.beginPath();
+                context.moveTo(sx - 1.8, sy);
+                context.lineTo(sx, sy - 1);
+                context.lineTo(sx + 2.3, sy - 0.3);
+                context.lineTo(sx + 1.5, sy + 1.4);
+                context.lineTo(sx - 1.2, sy + 1);
+                context.closePath();
+                context.fill();
+                context.fillStyle = '#ac9270';
+                context.fillRect(sx - 0.5, sy - 0.5, 1.5, 0.4);
+                context.fillStyle = '#342b2c';
+                context.fillRect(tx + 1 + seed * 2, sy + 1, 0.9, 0.7);
+            }
+        }
+        context.fillStyle = '#56bd66';
+        context.fillRect(x, y, width, 2);
+        context.fillStyle = '#adeda0';
+        context.fillRect(x, y, width, 0.65);
+        // Diskrete side- og bundskygger gør også de tynde svæveplatforme solide.
+        context.fillStyle = 'rgba(13, 20, 25, 0.35)';
+        context.fillRect(x, y + 3, 0.8, height - 3);
+        context.fillRect(x + width - 1, y + 3, 1, height - 3);
+        context.fillRect(x, y + height - 1, width, 1);
+        context.restore();
     }
 
     function drawFinish() {
@@ -1882,17 +2010,20 @@
         for (const diamond of diamonds) {
             if (diamond.collected) continue;
 
-            // Fire forskudte frames får hver diamant til at vippe, lyse op og
-            // sende et kort glimt ud til skiftevis højre og venstre side.
-            const frame = Math.floor(elapsedRealSeconds * 8 + diamond.x * 0.07) % 4;
-            const bob = frame === 1 ? -1 : frame === 3 ? 1 : 0;
-            const width = frame % 2 === 0 ? 5 : 4;
-            const sparkleSide = frame === 1 ? 1 : -1;
+            // Facetterne drejer med samme frame-rate som bolchet. Forskudte
+            // faser undgår, at alle diamanter blinker samtidigt.
+            const frame = getPickupAnimationFrame(elapsedRealSeconds, diamond.x * 0.07);
+            const angle = frame / PICKUP_ANIMATION_FRAMES * Math.PI * 2;
+            const bob = Math.sin(angle) * 0.8;
+            const width = 2 + 3 * Math.abs(Math.cos(angle));
+            const facetX = Math.sin(angle) * width * 0.65;
+            const shine = Math.pow(Math.max(0, Math.cos(angle - 0.8)), 6);
+            const sparkleSide = Math.sin(angle) >= 0 ? 1 : -1;
 
             context.save();
             context.translate(diamond.x, diamond.y + bob);
-            context.shadowColor = frame % 2 === 0 ? '#79f7ff' : '#c58aff';
-            context.shadowBlur = frame % 2 === 0 ? 6 : 3;
+            context.shadowColor = '#79f7ff';
+            context.shadowBlur = 3 + shine * 6;
 
             context.beginPath();
             context.moveTo(0, -6);
@@ -1900,7 +2031,11 @@
             context.lineTo(0, 6);
             context.lineTo(-width, -2);
             context.closePath();
-            context.fillStyle = frame % 2 === 0 ? '#5ff5ff' : '#9b73ff';
+            const gemGradient = context.createLinearGradient(-width, -6, width, 6);
+            gemGradient.addColorStop(0, '#d6ffff');
+            gemGradient.addColorStop(0.45, '#42e4ff');
+            gemGradient.addColorStop(1, '#6157d9');
+            context.fillStyle = gemGradient;
             context.fill();
             context.strokeStyle = '#f4ffff';
             context.lineWidth = 0.8;
@@ -1911,23 +2046,34 @@
             context.beginPath();
             context.moveTo(0, -5);
             context.lineTo(width - 1, -2);
-            context.lineTo(0, 0);
+            context.lineTo(facetX, 0);
             context.closePath();
             context.fillStyle = '#e8ffff';
             context.fill();
             context.beginPath();
-            context.moveTo(0, 0);
+            context.moveTo(facetX, 0);
             context.lineTo(width - 1, -2);
             context.lineTo(0, 5);
             context.closePath();
             context.fillStyle = '#376fd4';
             context.fill();
 
-            if (frame === 1 || frame === 3) {
+            if (shine > 0.05) {
                 const sparkleX = sparkleSide * 7;
+                const ray = 1 + shine * 2.5;
+                context.globalAlpha = shine;
                 context.fillStyle = '#ffffff';
-                context.fillRect(sparkleX, -4, 1, 5);
-                context.fillRect(sparkleX - 2, -2, 5, 1);
+                context.beginPath();
+                context.moveTo(sparkleX, -2 - ray);
+                context.lineTo(sparkleX + 0.5, -2.5);
+                context.lineTo(sparkleX + ray, -2);
+                context.lineTo(sparkleX + 0.5, -1.5);
+                context.lineTo(sparkleX, -2 + ray);
+                context.lineTo(sparkleX - 0.5, -1.5);
+                context.lineTo(sparkleX - ray, -2);
+                context.lineTo(sparkleX - 0.5, -2.5);
+                context.closePath();
+                context.fill();
             }
             context.restore();
         }
@@ -1955,7 +2101,7 @@
         const halfSize = Math.round(size / 2);
         const pumpPickup = type === 'pump' || type === 'autoPump';
 
-        if (showGlow && (type === 'candy' || pumpPickup)) {
+        if (showGlow && pumpPickup) {
             context.fillStyle = type === 'autoPump'
                 ? 'rgba(255, 184, 58, 0.30)'
                 : type === 'pump'
@@ -1964,39 +2110,26 @@
             context.beginPath();
             context.arc(x, y, halfSize + 3, 0, Math.PI * 2);
             context.fill();
-            // Kun bolsjet ligger på en lys medaljon. Pumpernes egne
-            // transparente silhuetter skal svæve frit i gløden.
-            if (type === 'candy') {
-                context.fillStyle = '#fff6ca';
-                context.beginPath();
-                context.arc(x, y, halfSize + 1, 0, Math.PI * 2);
-                context.fill();
-            }
         }
 
         if (image.complete && image.naturalWidth > 0) {
             context.imageSmoothingEnabled = true;
             if (type === 'candy') {
-                // Det genererede billede beskæres tæt og klippes til bolsjets
-                // cirkel. Derved kan billedfilens indlejrede baggrund ikke ses.
-                const sourcePadding = Math.round(image.naturalWidth * 0.095);
-                const sourceSize = image.naturalWidth - sourcePadding * 2;
-                context.save();
-                context.beginPath();
-                context.arc(x, y, halfSize, 0, Math.PI * 2);
-                context.clip();
+                // Seksten renderinger: tynde kantframes hører også til
+                // rotationen. HUD og spiseanimering bruger den læsbare front.
+                // PNG'en har rigtig alfa; ingen medaljon eller cirkelmaske.
+                const frameIndex = showGlow ? getPickupAnimationFrame(elapsedRealSeconds) : 0;
                 context.drawImage(
                     image,
-                    sourcePadding,
-                    sourcePadding,
-                    sourceSize,
-                    sourceSize,
+                    (frameIndex % 4) * 384,
+                    Math.floor(frameIndex / 4) * 384,
+                    384,
+                    384,
                     x - halfSize,
                     y - halfSize,
                     size,
                     size,
                 );
-                context.restore();
             } else if (pumpPickup) {
                 // Begge pumper har ægte transparens, men kildefilerne har lidt
                 // forskellig luft omkring silhuetten. Tæt kildebeskæring gør
@@ -2296,7 +2429,7 @@
         );
         const blobX = centerX + enemy.direction * (spriteSize * 0.38 + progress * 2.2);
         const blobY = bottomY - spriteSize * 0.52 - Math.sin(progress * Math.PI) * 2;
-        const radius = 1.2 + progress * 2.4;
+        const radius = 2.2 + progress * 2.4;
 
         context.save();
         context.fillStyle = '#ffd45b';
@@ -2489,8 +2622,8 @@
 
         // Den færdigrenderede sensor tegnes i figurens lokale koordinater. Den
         // følger dermed automatisk rotation, hop, løb og spiseframes.
-        // Det bløde klæbeplaster, kabinettets perspektiv og kontaktskyggen er
-        // en del af billedet, så CGM'en ser fastgjort ud i stedet for påmalet.
+        // Den tynde runde front komprimeres let til kindens perspektiv og
+        // placeres inden for kroppen uden en fremspringende sidevæg.
         const unit = spriteSize / 32;
         const bg = getGameBG();
 
@@ -2501,7 +2634,7 @@
         const smoothStep = (value) => value * value * (3 - 2 * value);
         const lowSeverity = smoothStep(clamp((5.2 - bg) / 2.4, 0, 1));
         const highSeverity = smoothStep(clamp((bg - 8) / 10, 0, 1));
-        const normalColor = [33, 148, 105];
+        const normalColor = [42, 255, 95];
         const lowColor = [255, 73, 103];
         const highColor = [255, 159, 67];
         const targetColor = lowSeverity > 0
@@ -2526,49 +2659,62 @@
         const primaryPulse = getPulsePeak(0.13, 0.075);
         const pairedPulse = getPulsePeak(0.34, 0.075) * highSeverity;
         const pulseStrength = Math.max(primaryPulse, pairedPulse);
-        const centerX = -8.0 * unit;
+        const centerX = -6.7 * unit;
         const centerY = -17.1 * unit;
-        const sensorWidth = 6.7 * unit;
-        const sensorHeight = 6.85 * unit;
+        const sensorWidth = 5.7 * unit;
+        const sensorHeight = 6.1 * unit;
 
         context.save();
         if (
             characterImages.cgmOverlay.complete
             && characterImages.cgmOverlay.naturalWidth > 0
         ) {
+            // Rund udklipning af den renderede front. Perspektivet er kun
+            // let komprimeret, og hele sensoren ligger inden for kinden.
+            // Klippet udelukker også billedværktøjets baggrund uden for disken.
+            context.save();
+            context.beginPath();
+            context.ellipse(centerX, centerY, sensorWidth / 2, sensorHeight / 2, 0, 0, Math.PI * 2);
+            context.clip();
             context.drawImage(
                 characterImages.cgmOverlay,
+                96, 86, 1062, 1062,
                 centerX - sensorWidth / 2,
                 centerY - sensorHeight / 2,
                 sensorWidth,
                 sensorHeight,
             );
+            context.restore();
         }
 
-        // Lampen fylder bevidst cirka en tredjedel af fronten. Ved den lille
-        // spriteopløsning giver det stadig 2-3 tydelige pixels. Kun lampens
+        // Lampen fylder bevidst cirka halvdelen af frontens diameter. Kun lampens
         // farvelag animeres; selve CGM-renderingen forbliver skarp og stabil.
-        const lampCenterX = centerX + 1.05 * unit;
-        const lampCenterY = centerY + 0.18 * unit;
-        const lampPulseScale = 1 + pulseStrength * 0.12;
+        const lampCenterX = centerX;
+        const lampCenterY = centerY;
+        // Opaquen mørk bund dækker den fotograferede linse helt. Dermed er
+        // slukket faktisk mørk, ikke en gennemsigtig grøn oven på et lyst glas.
+        const darkColor = [2, 14, 6];
+        const visibleColor = darkColor.map((channel, index) => Math.round(
+            channel + (lampColor[index] - channel) * pulseStrength,
+        ));
         context.shadowColor = alarmColor;
-        context.shadowBlur = (0.45 + pulseStrength * (2.2 + colorBlend * 1.4)) * unit;
-        context.globalAlpha = 0.34 + pulseStrength * 0.62;
-        context.fillStyle = alarmColor;
+        context.shadowBlur = pulseStrength * (4.2 + colorBlend * 1.4) * unit;
+        context.globalAlpha = 1;
+        context.fillStyle = `rgb(${visibleColor.join(', ')})`;
         context.beginPath();
         context.ellipse(
             lampCenterX,
             lampCenterY,
-            0.92 * unit * lampPulseScale,
-            1.22 * unit * lampPulseScale,
-            -0.48,
+            1.58 * unit,
+            1.69 * unit,
+            0,
             0,
             Math.PI * 2,
         );
         context.fill();
 
         context.shadowBlur = 0;
-        context.globalAlpha = 0.82;
+        context.globalAlpha = pulseStrength * 0.95;
         context.fillStyle = '#ffffff';
         context.beginPath();
         context.ellipse(
@@ -2798,6 +2944,13 @@
             17 * unit,
         );
 
+        // Dæk de tre altid-lysende rør i kildebilledet. Den synlige yderside
+        // får i stedet tre levende kamre, der følger det faktiske lager.
+        context.shadowBlur = 0;
+        context.fillStyle = '#242544';
+        context.fillRect(-14.8 * unit, -24.7 * unit, 5.3 * unit, 9.4 * unit);
+        drawPumpReservoirs(-20.7 * unit, -21.6 * unit, unit);
+
         // Den store ravfarvede lampe er placeret på den synlige yderkant af
         // rygsækken. Pulsen viser, at automatikken er aktiv, også når resten
         // af enheden delvist dækkes af monsterets krop.
@@ -2809,6 +2962,78 @@
         context.beginPath();
         context.arc(-18.1 * unit, -24.3 * unit, 0.78 * unit, 0, Math.PI * 2);
         context.fill();
+        context.restore();
+    }
+
+    function drawPumpReservoirs(x, y, unit) {
+        // Tre blå rør har både tom/fuld-kontrast og samme rækkefølge som HUD.
+        // Rammerne forbliver synlige, så slukket ikke kan forveksles med fravær.
+        for (let slot = 0; slot < 3; slot += 1) {
+            const tubeY = y + slot * 2.7 * unit;
+            context.fillStyle = '#071424';
+            context.strokeStyle = '#76909f';
+            context.lineWidth = 0.5 * unit;
+            context.beginPath();
+            context.roundRect(x, tubeY, 4.8 * unit, 2 * unit, 0.65 * unit);
+            context.fill();
+            context.stroke();
+            const filled = slot < pumpInsulinStored;
+            const discharge = !filled && slot === pumpInsulinStored
+                && player.insulinUseSource === 'pump' ? player.insulinUseTime : 0;
+            context.fillStyle = filled || discharge > 0 ? '#33d9ff' : '#153649';
+            context.shadowColor = '#26cfff';
+            context.shadowBlur = filled ? 2 * unit : 0;
+            context.fillRect(x + 0.6 * unit, tubeY + 0.55 * unit,
+                3.6 * unit * (filled ? 1 : Math.max(0.1, discharge)), 0.9 * unit);
+            context.shadowBlur = 0;
+        }
+    }
+
+    function drawPlayerActionEffects() {
+        if (gameState !== 'playing') return;
+        const centerX = player.x + PLAYER_WIDTH / 2;
+        const feetY = player.y + PLAYER_HEIGHT + CHARACTER_GROUND_OFFSET;
+        const pose = getPlayerAnimationPose();
+        context.save();
+        context.translate(centerX + player.facing * (pose.forward || 0), feetY - pose.lift);
+        context.scale(player.facing, 1);
+        if (player.candyUseTime > 0) {
+            const progress = 1 - player.candyUseTime / 0.9;
+            // Bolsjet flyttes fra hånden ind i den allerede åbnede mund og
+            // bliver mindre under biddet. Ingen forsinkelse af modelinputtet.
+            const bite = clamp((progress - 0.2) / 0.65, 0, 1);
+            const candyX = 16 - bite * 12;
+            const candyY = -12 - Math.sin(bite * Math.PI / 2) * 4;
+            context.fillStyle = '#9b3bc4';
+            context.beginPath();
+            context.ellipse(candyX + 1, candyY + 3, 2.7, 1.8, -0.4, 0, Math.PI * 2);
+            context.fill();
+            drawPickup('candy', candyX, candyY, Math.max(0.2, 9 * (1 - bite)), false);
+        }
+        if (player.insulinUseTime > 0) {
+            const progress = 1 - player.insulinUseTime;
+            const pulse = Math.sin(progress * Math.PI);
+            context.strokeStyle = `rgba(85, 224, 255, ${pulse * 0.9})`;
+            context.lineWidth = 1;
+            context.beginPath();
+            context.ellipse(-1, -9, 8 + progress * 5, 6 + progress * 3, 0, 0, Math.PI * 2);
+            context.stroke();
+            if (player.insulinUseSource === 'pen') {
+                const approach = Math.sin(Math.min(progress / 0.45, 1) * Math.PI / 2);
+                context.save();
+                context.translate(14 - approach * 8, -9);
+                context.rotate(-0.75);
+                drawPickup('insulin', 0, 0, 11, false);
+                context.restore();
+            } else {
+                // En tydelig strømpuls fra pumpen til kroppen viser en dosis,
+                // mens en pen, der kun lagres, alene har HUD-flyveanimationen.
+                context.fillStyle = '#aff8ff';
+                context.beginPath();
+                context.arc(-14 + progress * 14, -12 + progress * 3, 1.2, 0, Math.PI * 2);
+                context.fill();
+            }
+        }
         context.restore();
     }
 
@@ -3130,7 +3355,7 @@
         context.fillText(`SCORE ${score}`, 5, 4);
         context.fillStyle = remainingTimeSeconds <= 20 ? '#ff687f' : '#ffffff';
         context.fillText(
-            `S${currentLevelIndex + 1} L${lives} T${String(Math.ceil(remainingTimeSeconds)).padStart(3, '0')} TIR${String(Math.round(getTIRFraction() * 100)).padStart(3, '0')}`,
+            `S${currentLevelIndex + 1} L${lives} TIME ${Math.ceil(remainingTimeSeconds)}`,
             5,
             17,
         );
@@ -3168,9 +3393,12 @@
         ).length;
         const visiblePumpInsulin = Math.max(0, pumpInsulinStored - delayedPumpPens);
         if (showPumpHUD) {
+            context.fillStyle = '#bafaff';
+            context.font = 'bold 7px monospace';
+            context.fillText(`${visiblePumpInsulin}/3`, 174, 19);
             for (let slotIndex = 0; slotIndex < 3; slotIndex += 1) {
                 const slotX = 134 + slotIndex * 12;
-                context.fillStyle = 'rgba(66, 112, 139, 0.72)';
+                context.fillStyle = slotIndex < visiblePumpInsulin ? '#157faa' : '#0a1833';
                 context.fillRect(slotX, 17, 10, 12);
                 context.strokeStyle = '#72dff4';
                 context.lineWidth = 1;
@@ -3227,7 +3455,7 @@
         const statsPanelLeft = scalePanelLeft - statsPanelWidth;
         const bg = getGameBG();
         const minimumBG = 2.8;
-        const maximumBG = 18;
+        const maximumBG = 19;
         const rawIOB = physiologyState
             ? (physiologyState.displayIOB ?? physiologyState.iob)
             : 0;
@@ -3240,8 +3468,8 @@
         // øverst og lave nederst. Alarmzonerne svarer til kindens CGM-farver.
         const yForBG = (value) => bottom
             - clamp((value - minimumBG) / (maximumBG - minimumBG), 0, 1) * height;
-        const highBoundaryY = yForBG(TIR_MAX_MMOL_L);
-        const lowBoundaryY = yForBG(TIR_MIN_MMOL_L);
+        const highBoundaryY = yForBG(BG_GREEN_MAX_MMOL_L);
+        const lowBoundaryY = yForBG(BG_GREEN_MIN_MMOL_L);
         const markerY = yForBG(bg);
 
         context.save();
@@ -3276,6 +3504,20 @@
         context.fillRect(x, highBoundaryY, width, lowBoundaryY - highBoundaryY);
         context.fillStyle = '#ff5f78';
         context.fillRect(x, lowBoundaryY, width, bottom - lowBoundaryY);
+
+        // Pulsen sidder på den eksisterende skala, ikke som endnu en BG-bar.
+        // Normalområdet er roligt; lave værdier pulserer hurtigere end høje.
+        if (bg < BG_GREEN_MIN_MMOL_L || bg > BG_GREEN_MAX_MMOL_L) {
+            const low = bg < BG_GREEN_MIN_MMOL_L;
+            const pulse = 0.5 + 0.5 * Math.sin(elapsedRealSeconds * (low ? 8 : 3.5));
+            context.strokeStyle = low ? `rgba(255, 72, 110, ${0.35 + pulse * 0.65})`
+                : `rgba(255, 177, 62, ${0.35 + pulse * 0.65})`;
+            context.lineWidth = 1.5 + pulse;
+            context.shadowColor = low ? '#ff456e' : '#ffb23f';
+            context.shadowBlur = 3 + pulse * 5;
+            context.strokeRect(x - 2, top - 2, width + 4, height + 4);
+            context.shadowBlur = 0;
+        }
 
         context.strokeStyle = 'rgba(255, 255, 255, 0.78)';
         context.lineWidth = 1;
@@ -3319,29 +3561,12 @@
     }
 
     function drawMessage() {
-        if (messageTime <= 0 || gameState !== 'playing') return;
-        const isHint = message.startsWith('HINT:');
-
+        const hintText = gameState === 'playing' && activeHint ? activeHint.text : '';
+        if (gameHint.textContent !== hintText) gameHint.textContent = hintText;
+        gameHint.hidden = !hintText;
+        if (gameState !== 'playing') return;
         context.save();
-
-        if (isHint) {
-            // Betjeningstips har en stabil placering i bunden. De bevæger sig
-            // ikke med figuren og beholder en rolig bagplade for læsbarhed.
-            const hintText = message.replace(/^HINT:\s*/, '');
-            context.font = 'bold 7px monospace';
-            const width = Math.min(SCREEN_WIDTH - 44, context.measureText(hintText).width + 14);
-            const x = Math.round((SCREEN_WIDTH - width) / 2);
-            const y = SCREEN_HEIGHT - 18;
-            context.fillStyle = 'rgba(10, 12, 35, 0.88)';
-            context.fillRect(x, y, width, 14);
-            context.strokeStyle = '#75efff';
-            context.lineWidth = 1;
-            context.strokeRect(x + 0.5, y + 0.5, width - 1, 13);
-            context.fillStyle = '#ffffff';
-            context.textAlign = 'center';
-            context.textBaseline = 'top';
-            context.fillText(hintText, x + width / 2, y + 4, width - 8);
-        } else {
+        if (messageTime > 0) {
             // Pickups og handlinger er diskrete arkadetekster uden bagplade.
             // De står ved hændelsesstedet og toner ud over deres korte levetid.
             const fadeProgress = messageDuration > 0
@@ -3464,7 +3689,6 @@
             soundEffectsEnabled: audio.effectsEnabled,
             audioContextState: audio.context ? audio.context.state : 'not-created',
             remainingTimeSeconds,
-            tirPercent: Math.round(getTIRFraction() * 100),
             cameraX,
         }),
     };
