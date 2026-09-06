@@ -66,7 +66,7 @@
         if(!document.hidden){
             if(playing){
                 const step=dt*Number($('speed').value);
-                phase=(phase+step*(['inspect','curious'].includes(options.motion)?1/6:.72))%1;
+                phase=(phase+step*(['inspect','curious'].includes(options.motion)?1/6:options.motion==='run'?1.08:.72))%1;
                 Dex3D.advanceActivity(activity,options.motion,step);
             }
             if($('turntable').checked)yaw+=dt*.32;

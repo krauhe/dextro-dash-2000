@@ -38,7 +38,7 @@
         const t=((phase%1)+1)%1,w=Math.sin(t*TAU),run=motion==='run',jump=motion==='jump',eat=motion==='eat';
         const airborne=jump?Math.sin(Math.PI*t)**2:0;
         const reach=eat?Math.sin(Math.PI*clamp(t/.75,0,1))**2:0;
-        return {t,lift:jump?airborne*.75:run?.035*(1-Math.cos(t*TAU*2)):.012*w,
+        return {t,lift:jump?airborne*.75:run?.01*(1-Math.cos(t*TAU*2)):.012*w,
             stride:run?w*.65:jump?-.4*airborne:0,
             knee:run?Math.max(0,-w)*.8:jump?airborne*.95:0,
             otherKnee:run?Math.max(0,w)*.8:jump?airborne*.95:0,
@@ -186,9 +186,11 @@
             // Roden sænkes lidt i huden, så der ikke opstår en synlig samling.
             const angle=degrees*Math.PI/180,y=1.08*Math.cos(angle),z=-.84*Math.sin(angle);
             const normal=surfaceNormal(0,y,z);
-            const hinge=joint(torso,0,y-normal.y*.055,z-normal.z*.055,'quill');
+            const hinge=joint(torso,0,y-normal.y*.10,z-normal.z*.10,'quill');
             hinge.userData.restAngle=Math.atan2(normal.z,normal.y);
-            tapered(hinge,[[0,0,0],[0,length*.35,0],[0,length*.75,0],[0,length,0]],radius,skin);
+            const quillMesh=tapered(hinge,[[0,0,0],[0,length*.35,0],[0,length*.75,0],[0,length,0]],radius,skin);
+            hinge.userData.mesh=quillMesh;hinge.userData.length=length;
+            hinge.userData.base=quillMesh.geometry.attributes.position.array.slice();
             quills.push(hinge);
         }
         const tailRoot=joint(torso,0,-.60,-.57,'tail');
@@ -302,19 +304,54 @@
             const motion=options.motion||'idle',p=pose(motion,phase),beat=characterBeat(motion,p.t,options);
             const {inspect,curious,effort,breath}=beat;
             const droop=bgDroop(options.bg??6);
-            quills.forEach(quill=>{quill.rotation.x=quill.userData.restAngle*(1-droop)-2.1*droop;});
+            quills.forEach((quill,index)=>{
+                // Rodens vinkel er fast. Bøjningen fordeles langs piggen og
+                // starter med nul hældning, så forsiden ikke løftes fri af huden.
+                const data=quill.userData,positions=data.mesh.geometry.attributes.position;
+                quill.rotation.x=data.restAngle;
+                const sway=Math.sin(beat.clock*3.7-index*.8)*(motion==='run'?.12:.035);
+                const bend=(-2.4-data.restAngle)*droop+sway;
+                let cy=0,cz=0;
+                for(let ring=0;ring<=26;ring++){
+                    const t=ring/26,angle=bend*smooth(t);
+                    if(ring){const mid=bend*smooth((ring-.5)/26);cy+=data.length/26*Math.cos(mid);cz+=data.length/26*Math.sin(mid);}
+                    for(let side=0;side<=10;side++){
+                        const k=ring*11+side,x=data.base[k*3],z=data.base[k*3+2];
+                        positions.setXYZ(k,x,cy-z*Math.sin(angle),cz+z*Math.cos(angle));
+                    }
+                }
+                positions.needsUpdate=true;data.mesh.geometry.computeVertexNormals();
+            });
             const automaticMouth=motion==='eat'?p.mouth:p.mouth*(1-Math.max(inspect,curious))+.08*inspect+.18*curious;
             const mouth=options.autoMouth===false?options.mouth:motion==='eat'?p.mouth:automaticMouth*(1-effort)+effort*(.16+.42*breath);
             mouthShape(clamp(mouth,0,1));group.position.y=p.lift-.18;group.position.x=.09*inspect;
             // Tungen hviler bag læben. Kun spisning rækker den lidt frem;
             // åben mund og tung vejrtrækning betyder ikke automatisk tunge ud.
             tongue.position.z=.32+(motion==='eat'?.19*p.reach:0);
-            torso.rotation.x=p.lean+.23*inspect+.025*effort*(breath-.5);
+            // Squash/stretch omkring kroppens nederste del. Fødderne og
+            // spillets kollisionsboks ændres ikke med den elastiske overkrop.
+            const runStretch=motion==='run'?-.020*Math.cos(p.t*TAU*2):0;
+            const jumpStretch=motion==='jump'?(Number.isFinite(options.verticalSpeed)?clamp(-options.verticalSpeed/218,-1,1)*.12:.12*Math.cos(p.t*Math.PI)):0;
+            const previewLanding=motion==='jump'&&options.landing===undefined?.20*Math.exp(-Math.pow((p.t-.95)/.045,2)):0;
+            const landing=clamp(options.landing??previewLanding,-.3,1);
+            const stretch=runStretch+jumpStretch-.22*landing;
+            const heightScale=1+stretch+.025*effort*breath;
+            const widthScale=1/Math.sqrt(heightScale);
+            torso.rotation.x=p.lean+.23*inspect+.025*effort*(breath-.5)+(motion==='run'?.012*Math.sin(p.t*TAU*2):0);
             torso.rotation.y=clamp(options.lookYaw||0,-.65,.65)*curious;
-            torso.rotation.z=-.10*inspect+.07*curious;
-            torso.position.y=1.63+.035*effort*breath;
-            torso.scale.set(1+.015*effort*breath,1+.025*effort*breath,1+.025*effort*breath);
-            legs.forEach((leg,i)=>{leg.hip.rotation.x=(i===0?1:-1)*p.stride;leg.knee.rotation.x=-(i===0?p.knee:p.otherKnee);leg.foot.rotation.x=-(leg.hip.rotation.x+leg.knee.rotation.x)*.6;});
+            torso.rotation.z=-.10*inspect+.07*curious+(motion==='run'?.015*Math.sin(p.t*TAU):0);
+            torso.position.y=1.63+.8*stretch+.035*effort*breath;
+            torso.scale.set(widthScale,heightScale,widthScale);
+            // Grejet er stift, selv om kroppen under det er elastisk.
+            for(const equipment of [pump,backpack,sensor])equipment.scale.set(1/widthScale,1/heightScale,1/widthScale);
+            legs.forEach((leg,i)=>{
+                const stride=(i===0?1:-1)*p.stride;
+                // Positiv hoftevinkel fører foden bagud i modellens +Z-front.
+                // Forlæng kun afsættet; forreste ben skal ikke sparke højere op.
+                leg.hip.rotation.x=stride+(motion==='run'?Math.max(0,stride)/.65*.40:0);
+                leg.knee.rotation.x=-(i===0?p.knee:p.otherKnee);
+                leg.foot.rotation.x=-(leg.hip.rotation.x+leg.knee.rotation.x)*.6;
+            });
             legs[0].hip.rotation.x-=1.10*inspect;legs[0].knee.rotation.x+=.35*inspect;legs[0].foot.rotation.x-=.75*inspect;
             arms.forEach((arm,i)=>{
                 const sign=i===0?-1:1;

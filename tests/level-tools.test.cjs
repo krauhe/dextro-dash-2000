@@ -24,6 +24,11 @@ for(const stage of [1,2,3,4,5,6,7,8,9,10,10]){
         if(!e.eggDrop)assert.ok(supported(e.minX,e.maxX),`${stage} ${e.type} patrol`);
     }
     for(const item of level.items)assert.ok(['candy','insulin','pump','autoPump','sugarCane'].includes(item.type));
+    assert.ok(level.blocks.some(b=>b.reward==='monster'));
+    for(const block of level.blocks) {
+        assert.ok(['diamonds','candy','pump','autoPump','monster'].includes(block.reward));
+        if(block.reward==='monster')assert.ok(level.roster.includes(block.monsterType));
+    }
     assert.ok(level.diamonds.some(([x,y])=>level.items.some(i=>i.type==='insulin'&&Math.abs(i.x-x)<=8&&i.y===y)));
 }
 assert.deepEqual([...new Set(generated[0].enemies.map(e=>e.type))],['apple']);

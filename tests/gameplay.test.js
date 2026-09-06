@@ -40,7 +40,7 @@ function createGame() {
         setEffectsEnabled(value) { this.effectsEnabled = value; }
     }
     const sandbox = {
-        console, Math, Date, performance: {now: () => 0},
+        console, Math:Object.create(Math), Date, performance: {now: () => 0},
         document: {getElementById: element},
         Image: class { constructor() { this.complete = false; this.naturalWidth = 0; } },
         Path2D: class {constructor() { return new Proxy({}, {get: () => noop}); }},
@@ -59,6 +59,11 @@ function createGame() {
                 getHighBGFatigue, drawLevel, drawMessage, render, updatePizzaThrowState,
                 setTutorialEnabled, updateEggState, updateEnemies, updateStageObstacles, hitCacheBlock,
                 updateKeyboardSketch, drawKeyboardSketch, startNextLevel,
+                eatEnemy, getEatingFoodPose, updateParticles,
+                getEggRenderPose,
+                startAttractDemo, getDemoStartPositions,
+                set random(value){Math.random=value;}, get demoMode(){return demoMode;},
+                get tail(){return tailSegments;},
                 get keyboardPickups(){return keyboardActionPickups;},
                 set camera(value){cameraX=value;},
                 get platforms(){return platforms;}, get blocks(){return cacheBlocks;}, get enemies(){return enemies;},
@@ -95,6 +100,75 @@ function pick(type) {
     return item;
 }
 const key = (value, repeat = false) => g.handleKeyDown({key: value, repeat, preventDefault: noop});
+
+check('Attract demos vary stage and safe interior position; camera/tail follow and player starts remain unchanged', () => {
+    const overlaps=(a,b)=>a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
+    for(let stage=0;stage<10;stage++){
+        g.startLevel(stage);
+        const positions=g.getDemoStartPositions();
+        assert.ok(positions.length>=3,`stage ${stage+1} has multiple demo starts`);
+        for(const position of positions){
+            const body={...position,width:17,height:23};
+            const support=g.platforms.find(p=>!p.crumble && !p.collapsed && p.y===position.y+23
+                && p.x<=position.x && p.x+p.width>=position.x+17+60);
+            assert.ok(support,'fully supported with forward runway');
+            assert.ok(!g.platforms.some(p=>p!==support && overlaps(body,p)),'not inside a wall');
+            assert.ok(!g.blocks.some(b=>overlaps(body,b)),'not inside a cache');
+            assert.ok(!g.enemies.some(e=>overlaps(body,e)),'not inside an enemy');
+        }
+    }
+    let seed=2000,previousStage=-1;
+    const stages=new Set(),positions=new Set();
+    g.random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
+    for(let run=0;run<100;run++){
+        g.startAttractDemo();const state=snapshot();
+        assert.ok(g.demoMode);assert.equal(g.state,'playing');
+        assert.notEqual(state.stage,previousStage);previousStage=state.stage;
+        assert.ok(state.x>200);assert.ok(state.cameraX>0);
+        assert.ok(Math.abs(state.x-state.cameraX-80)<.001);
+        assert.equal(g.player.previousY,g.player.y);
+        assert.ok(Math.abs(g.tail[0].x-state.x)<20,'tail reset after relocating');
+        assert.ok(Math.abs(state.bg-6)<.01);assert.equal(state.cob,0);
+        stages.add(state.stage);positions.add(`${state.stage}:${state.x}`);
+    }
+    assert.equal(stages.size,10);assert.ok(positions.size>40);
+    key('ArrowRight');assert.equal(g.demoMode,false);
+    assert.equal(snapshot().stage,1);assert.ok(snapshot().x<100);assert.equal(snapshot().cameraX,0);
+    key('7');assert.equal(snapshot().stage,7);assert.ok(snapshot().x<100);
+    g.random=Math.random;
+});
+
+check('Eating pulls the full enemy to the mouth, shrinks to zero and emits food-specific pulp once', () => {
+    for (const facing of [-1,1]) {
+        g.startLevel(0);
+        const enemy=g.enemies[0];enemy.type='apple';enemy.x=g.player.x+facing*20;
+        const meals=g.engine.activeFood.length;
+        g.eatEnemy(enemy);
+        assert.equal(enemy.alive,false);
+        assert.equal(g.engine.activeFood.length,meals+1);
+        const mouth={x:g.player.x+8+facing*5,y:g.player.y+8};
+        let previousSize=Infinity;
+        for(const progress of [0,.1,.25,.5,.75,.95,1]) {
+            enemy.biteAnimationTime=.66*(1-progress);
+            const pose=g.getEatingFoodPose(enemy,mouth);
+            assert.ok(pose.size<=previousSize);previousSize=pose.size;
+            if(progress===0){assert.equal(pose.size,31);assert.equal(pose.x,enemy.x+enemy.width/2);}
+            if(progress===1){assert.equal(pose.size,0);assert.equal(pose.x,mouth.x);assert.equal(pose.y,mouth.y);}
+        }
+        enemy.biteAnimationTime=.66;
+        assert.equal(g.particles.filter(p=>p.kind==='food-pulp').length,5);
+        g.updateEnemies(.46);
+        const pulp=g.particles.filter(p=>p.kind==='food-pulp');
+        assert.equal(pulp.length,17);
+        assert.ok(pulp.every(p=>['#fff0bc','#f3d88c','#fff9df'].includes(p.color)));
+        g.updateEnemies(.3);g.updateEnemies(.01);
+        assert.equal(g.particles.filter(p=>p.kind==='food-pulp').length,17);
+        assert.equal(g.engine.activeFood.length,meals+1);
+        assert.equal(enemy.biteAnimationTime,0);
+        g.updateParticles(1);
+        assert.equal(g.particles.filter(p=>p.kind==='food-pulp').length,0);
+    }
+});
 
 check('Diamond pickup shows its bonus once without awarding immediate duplicate points', () => {
     g.startLevel(0);
@@ -220,13 +294,13 @@ check('A full pump also uses an extra pen at low BG, as explicitly designed', ()
     g.physiology = {trueBG: 3.5}; const before = g.engine.activeFastInsulin.length;
     pick('insulin'); assert.equal(g.engine.activeFastInsulin.length, before + 1);
 });
-check('First-use hints last 12 visible seconds, queue, and ignore pickup labels', () => {
+check('First-use hints last 8 visible seconds, queue, and ignore pickup labels', () => {
     g.startLevel(8); g.setTutorialEnabled(true, false); pick('candy'); const text = g.hint.text; pick('insulin');
-    assert.equal(g.hint.text, text); assert.equal(g.hint.remaining, 12);
+    assert.equal(g.hint.text, text); assert.equal(g.hint.remaining, 8);
     pick('pump'); assert.equal(g.hints.length, 1);
-    g.updateHints(11); assert.equal(g.hint.text, text);
+    g.updateHints(7); assert.equal(g.hint.text, text);
     g.updateHints(1); assert.match(g.hint.text, /MANUAL PUMP/);
-    assert.equal(g.hint.remaining, 12);
+    assert.equal(g.hint.remaining, 8);
 });
 check('Opening movement and ordinary food encounters leave players free to discover', () => {
     const {g: opening} = createGame();
@@ -425,12 +499,12 @@ check('Tutorial counts down automatically and smoothly restores world speed with
     const before=snapshot().remainingTimeSeconds;
     for(let i=0;i<60;i++)g.update(1/60);
     assert.ok(Math.abs(before-snapshot().remainingTimeSeconds-0.06)<1e-6);
-    assert.ok(Math.abs(g.hint.remaining-11)<1e-6);
+    assert.ok(Math.abs(g.hint.remaining-7)<1e-6);
     key('Enter');assert.ok(g.hint);
     g.render();
-    assert.ok(Math.abs(element('hintTimer').value-11)<1e-6);
-    assert.equal(element('hintTimer').max,12);
-    g.hint.remaining=1;
+    assert.ok(Math.abs(element('hintTimer').value-7)<1e-6);
+    assert.equal(element('hintTimer').max,8);
+    g.hint.remaining=2/3;
     const ramp=snapshot().remainingTimeSeconds;
     g.update(1/60);
     assert.ok(Math.abs((ramp-snapshot().remainingTimeSeconds)*60-0.53)<1e-6);
@@ -476,15 +550,93 @@ check('Crumble floors warn, disappear, reform safely, and reset on restart', () 
     g.player.x=34;g.updateStageObstacles(0.1);assert.equal(floor.collapsed,false);
     g.startLevel(4);assert.equal(g.platforms.find(p=>p.crumble).crumbleTime,null);
 });
-check('Egg gives warning, then falls and rolls; rolling contact loses a life', () => {
+check('Mystery caches animate a question mark, release one stage monster, and reset', () => {
+    for(let stage=0;stage<10;stage++) {
+        g.startLevel(stage);
+        const block=g.blocks.find(b=>b.reward==='monster');assert.ok(block,`stage ${stage+1}`);
+        g.camera=block.x-90;g.animationSeconds=0;calls.length=0;g.drawLevel();
+        assert.ok(calls.some(c=>c.type==='text'&&c.args[0]==='?'));
+        const count=g.enemies.length;
+        // Genuinely hit the underside, rather than calling the release directly.
+        g.player.x=block.x+1;g.player.y=131;g.player.onGround=true;g.keys.right=false;g.keys.left=false;
+        g.player.vx=0;g.jump();
+        for(let step=0;step<60&&!block.used;step++)g.updatePlayer(1/120);
+        assert.equal(block.used,true);assert.equal(g.enemies.length,count+1);
+        const spawned=g.enemies.at(-1);assert.equal(spawned.type,block.monsterType);
+        const startY=spawned.y;
+        g.player.x=34;g.updateEnemies(.2);assert.ok(spawned.y<startY);
+        assert.equal(spawned.fizzState,'normal');
+        for(let i=0;i<60;i++)g.updateEnemies(1/60);
+        assert.equal(spawned.cacheEntrance,null);
+        assert.ok(g.platforms.some(p=>Math.abs(p.y-spawned.y-22)<.001
+            &&p.x<=spawned.x&&p.x+p.width>=spawned.x+22));
+        assert.ok(Number.isFinite(spawned.x));g.hitCacheBlock(block);
+        assert.equal(g.enemies.length,count+1);
+        g.startLevel(stage);assert.ok(g.blocks.every(b=>!b.used));
+        assert.equal(g.enemies.length,count);
+    }
+});
+check('Egg folds its feet, rolls off its perch, lands below and rolling contact loses a life', () => {
     g.startLevel(1);const egg=g.enemies.find(e=>e.eggDrop);
     g.player.x=egg.x-100;g.updateEggState(egg,0.01);assert.equal(egg.eggState,'warning');
     g.updateEggState(egg,1.2);assert.equal(egg.eggState,'warning');
-    g.updateEggState(egg,0.21);assert.equal(egg.eggState,'falling');
-    for(let i=0;i<120&&egg.eggState==='falling';i++)g.updateEggState(egg,1/120);
+    g.updateEggState(egg,0.21);assert.equal(egg.eggState,'rolling');
+    assert.equal(egg.y+egg.height,96,'does not drop through its perch');
+    assert.equal(egg.eggTuck,1);
+    let fell=false;
+    for(let i=0;i<360&&egg.y+egg.height<154;i++){
+        g.updateEggState(egg,1/120);fell ||= egg.eggState==='falling';
+    }
+    assert.ok(fell);assert.equal(egg.y+egg.height,154);
     assert.equal(egg.eggState,'rolling');
     g.player.x=egg.x;g.player.y=egg.y;g.updateEnemies(0.001);assert.equal(g.state,'dying');
     g.updateEggState(egg,2.7);assert.equal(egg.eggState,'resting');
+});
+
+check('Egg collision catches thin and stacked floors, cache tops and solid walls at varied frame rates',()=>{
+    for(const fps of [10,30,60,120])for(const direction of [-1,1]){
+        g.startLevel(1);const egg=g.enemies.find(e=>e.eggDrop);
+        g.platforms.splice(0,g.platforms.length,
+            {x:0,y:130,width:400,height:20},{x:0,y:65,width:400,height:1});
+        g.blocks.splice(0);
+        Object.assign(egg,{x:100,y:0,direction,eggState:'falling',eggTimer:2.6,eggVelocityY:2200,eggTuck:1});
+        for(let i=0;i<Math.ceil(fps*.2);i++)g.updateEggState(egg,1/fps);
+        assert.equal(egg.y+egg.height,65,`${fps} FPS: highest crossed floor catches fast fall`);
+        assert.equal(egg.eggVelocityY,0);
+        const oldX=egg.x,oldAngle=egg.eggRotation;
+        g.updateEggState(egg,1/fps);
+        assert.ok(Math.abs((egg.eggRotation-oldAngle)-(egg.x-oldX)/9.2)<1e-9);
+
+        // Det øverste gulv falder bort: den aktive kasse under det skal fange ægget.
+        g.platforms[1].collapsed=true;
+        g.blocks.push({x:0,y:100,width:400,height:3,solid:true});
+        g.updateEggState(egg,.8);assert.equal(egg.y+egg.height,100);
+        g.platforms.push({x:180,y:0,width:4,height:100,solid:true});
+        Object.assign(egg,{x:150,direction:1,eggState:'rolling',eggTimer:2.6});
+        g.updateEggState(egg,.3);assert.equal(egg.direction,-1);assert.ok(egg.x+22<=180);
+        g.platforms.push({x:100,y:0,width:4,height:100,solid:true});
+        g.updateEggState(egg,1);assert.equal(egg.direction,1);assert.ok(egg.x>=104);
+    }
+});
+
+check('Rolling eggs fall at real edges and holes, while their shell rotates about its own grounded centre',()=>{
+    g.startLevel(1);const egg=g.enemies.find(e=>e.eggDrop);
+    g.platforms.splice(0,g.platforms.length,
+        {x:100,y:70,width:60,height:12},{x:0,y:130,width:400,height:12});g.blocks.splice(0);
+    Object.assign(egg,{x:125,y:48,direction:1,eggState:'rolling',eggTimer:2.6,eggVelocityY:0,eggTuck:1});
+    let fell=false;
+    for(let i=0;i<180;i++){g.updateEggState(egg,1/120);fell ||= egg.eggState==='falling';}
+    assert.ok(fell);assert.equal(egg.y+egg.height,130);
+    for(const angle of [0,Math.PI/2,Math.PI,Math.PI*1.5]){
+        egg.eggRotation=angle;const pose=g.getEggRenderPose(egg);
+        assert.equal(pose.x,egg.x+11);
+        assert.ok(Math.abs(pose.y+pose.shellDepth-(egg.y+22))<1e-9);
+        assert.ok(pose.shellDepth>7 && pose.shellDepth<10);
+    }
+    Object.assign(egg,{eggState:'resting',eggRotation:.8});g.updateEggState(egg,1);
+    assert.ok(Math.abs(egg.eggRotation)<.001);assert.equal(egg.eggTuck,0);
+    g.platforms.splice(0);g.updateEggState(egg,2);
+    assert.equal(egg.alive,false,'no invisible ground under a real hole');
 });
 check('Enemy bounces actually reach bonus plateaus at 30 and 60 FPS', () => {
     for(const fps of [30,60]){

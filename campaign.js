@@ -145,9 +145,13 @@ function buildDextroStage(index, seed = 2000 + index) {
             platform(start+110,128,75); platform(start+175,105,65);
             for(let k=0;k<3;k++) level.items.push({type:'insulin',x:start+125+k*36,y:90});
             monster(type,start+265);
+            if(kind==='pump') level.blocks.push({x:start-30,y:110,width:18,height:16,
+                reward:'monster',monsterType:type});
         } else if(kind==='crate') {
             level.blocks.push({x:start+80,y:110,width:18,height:16,reward:'diamonds'});
             level.blocks.push({x:start+125,y:97,width:18,height:16,reward:'candy'});
+            level.blocks.push({x:start+155,y:110,width:18,height:16,
+                reward:'monster',monsterType:type});
             platform(start+218,130,70); monster(type,start+280,154,{minX:start+275,maxX:start+310});
         }
         // One reserve pickup per later encounter, never placed in a mandatory

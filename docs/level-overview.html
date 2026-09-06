@@ -55,7 +55,7 @@ function drawAll(){
         ctx.strokeStyle='#223450';ctx.lineWidth=1;ctx.font='11px monospace';ctx.fillStyle='#7289ad';
         for(let x=0;x<level.width;x+=320){ctx.beginPath();ctx.moveTo(X(x),18);ctx.lineTo(X(x),222);ctx.stroke();ctx.fillText(x,X(x),234);}
         for(const p of level.platforms){ctx.fillStyle=p.solid?'#706383':p.crumble?'#ad7459':'#1d665e';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,p.solid?p.height*sy:Math.min(18,p.height*sy));ctx.fillStyle='#65daa6';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,3);}
-        for(const b of level.blocks||[]){ctx.fillStyle='#a8efff';ctx.fillRect(X(b.x),Y(b.y),Math.max(5,b.width*sx),b.height*sy);ctx.font='10px monospace';ctx.fillText(b.reward,X(b.x),Y(b.y)-5);}
+        for(const b of level.blocks||[]){ctx.fillStyle='#a8efff';ctx.fillRect(X(b.x),Y(b.y),Math.max(5,b.width*sx),b.height*sy);ctx.font='10px monospace';ctx.fillText(b.reward==='monster'?'? '+b.monsterType:b.reward,X(b.x),Y(b.y)-5);}
         for(const e of level.enemies){
             ctx.strokeStyle='#b88159';ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(X(e.minX),Y(e.y));ctx.lineTo(X(e.maxX),Y(e.y));ctx.stroke();ctx.setLineDash([]);
             ctx.fillStyle='#f0a379';ctx.fillRect(X(e.x)-4,Y(e.y)-8,8,11);ctx.font='11px monospace';ctx.fillText(e.type,X(e.x)-10,Y(e.y)-12);

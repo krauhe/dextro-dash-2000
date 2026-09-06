@@ -11,6 +11,8 @@
 
     const canvas = document.getElementById('gameCanvas');
     const context = canvas.getContext('2d');
+    // 2D-sprites bruges kun som fallback på enheder uden tilgængelig WebGL.
+    const dexRenderer = window.DexGameRenderer ? window.DexGameRenderer.create() : null;
     const overlay = document.getElementById('gameOverlay');
     const overlayTitle = document.getElementById('overlayTitle');
     const overlaySubtitle = document.getElementById('overlaySubtitle');
@@ -33,6 +35,8 @@
     const FIXED_STEP_SECONDS = 1 / 60;
     const SIMULATION_MINUTES_PER_REAL_SECOND = 4;
     const LEVEL_TIME_SECONDS = 120;
+    const HINT_TIME_SCALE = 2 / 3;
+    const HINT_RESUME_SECONDS = 2 * HINT_TIME_SCALE;
     const POINTS_PER_REMAINING_SECOND = 50;
     const POINTS_PER_DIAMOND = 100;
     const BONUS_TALLY_SECONDS_PER_ROW = 0.95;
@@ -69,7 +73,7 @@
     const GROUND_FRICTION = 720;
     const EAT_ANIMATION_SECONDS = 0.92;
     const EATING_SPEED_FACTOR = 0.18;
-    const ENEMY_BITE_FRAME_SECONDS = 0.55;
+    const ENEMY_BITE_FRAME_SECONDS = 0.66;
     // Flere, kortere led giver en glattere bøjning uden at gøre halen længere.
     // Den svagere retningsfjeder lader spidsen fortsætte bevægelsen efter sving.
     const TAIL_SEGMENT_COUNT = 9;
@@ -97,6 +101,26 @@
     const PIZZA_THROW_COOLDOWN_VARIATION_SECONDS = 1.8;
     const PIZZA_THROW_RANGE = 240;
     const CHEESE_PROJECTILE_GRAVITY = 180;
+    const EGG_ROLL_SPEED = 65;
+    const EGG_ROLL_RADIUS = 9.2;
+    // Skallens omrids i renderingens 512 x 512-koordinater. Tegning og
+    // gulvkontakt deler konturen, så et æg på siden ikke svæver over gulvet.
+    const EGG_SHELL_CURVES = [
+        [323,88,382,177,388,246], [407,332,346,397,266,396],
+        [188,394,143,351,145,274], [148,194,215,91,269,89],
+    ];
+    const EGG_SHELL_POINTS = (()=>{
+        const points=[];let x=269,y=89;
+        for(const [cx1,cy1,cx2,cy2,endX,endY] of EGG_SHELL_CURVES){
+            for(let n=0;n<=32;n++){
+                const t=n/32,u=1-t;
+                points.push({x:u*u*u*x+3*u*u*t*cx1+3*u*t*t*cx2+t*t*t*endX-270,
+                    y:u*u*u*y+3*u*u*t*cy1+3*u*t*t*cy2+t*t*t*endY-244});
+            }
+            x=endX;y=endY;
+        }
+        return points;
+    })();
 
     // FOOD_MONSTER_PROFILES er den fælles ernæringskilde for alle madmonstre.
     // Hver profil beskriver en dokumenteret referenceportion fra simulatorens
@@ -297,6 +321,7 @@
     let demoMode = false;
     let demoElapsedSeconds = 0;
     let demoJumpCooldownSeconds = 0;
+    let lastDemoLevelIndex = -1;
     let previousFrameTime = performance.now();
     let accumulatedTime = 0;
     let cameraX = 0;
@@ -404,7 +429,12 @@
         stageCues = (level.tutorialCues || []).map(c => ({...c, triggered:false}));
         items = level.items.map((item) => ({ ...item, collected: false }));
         diamonds = level.diamonds.map(([x, y]) => ({ x, y, collected: false }));
-        enemies = level.enemies.map((enemy, index) => ({
+        enemies = level.enemies.map(createEnemy);
+    }
+
+    // Samme initialisering for banens faste monstre og dem, der kommer ud af kasser.
+    function createEnemy(enemy, index) {
+        return {
             ...enemy,
             y: enemy.y - 8,
             width: 22,
@@ -412,7 +442,6 @@
             direction: index % 2 === 0 ? 1 : -1,
             alive: true,
             biteAnimationTime: 0,
-            biteSide: -1,
             // Kun Fizzler bruger tilstandsmaskinen. Det forskudte første skift
             // forhindrer flere sodavandsmonstre i at begynde at ryste samtidig.
             fizzState: 'normal',
@@ -426,11 +455,12 @@
             cheeseWindupTime: 0,
             cheeseThrowCycleIndex: 0,
             eggState: enemy.eggDrop ? 'perched' : 'idle', eggTimer:0,
-            eggHomeX:enemy.x, eggHomeY:enemy.y-8, eggRotation:0, eggVelocityY:0,
-        }));
+            eggHomeX:enemy.x, eggHomeY:enemy.y-8, eggRotation:0, eggVelocityY:0, eggTuck:0,
+        };
     }
 
     function resetRun(options = {}) {
+        if (dexRenderer) dexRenderer.reset();
         if (!options.keepScore) {
             score = 0;
             collectedDiamondCount = 0;
@@ -674,9 +704,53 @@
         if (attractAudioUnlocked) audio.attractCredits();
     }
 
+    function getDemoStartPositions() {
+        const level = getCurrentLevel();
+        const starts = [];
+        for (const floor of platforms) {
+            // Vis udsnit inde i banen med lidt tilløb mod højre. Ingen start
+            // på smuldregulve, i lavahuller eller helt henne ved målstregen.
+            if (floor.crumble || floor.collapsed || floor.y < PLAYER_HEIGHT+12) continue;
+            const firstX = Math.max(SCREEN_WIDTH*.75, floor.x+24);
+            const lastX = Math.min(floor.x+floor.width-PLAYER_WIDTH-60,
+                level.finishX-SCREEN_WIDTH);
+            for (let x=firstX; x<=lastX; x+=48) {
+                const y = floor.y-PLAYER_HEIGHT;
+                // Kontrollér også plads over hovedet og umiddelbart foran DEX.
+                // Faste tunnelloft/-vægge kan ligge oven i jordens x-interval.
+                const blocked = [...platforms,...cacheBlocks].some(obstacle =>
+                    obstacle!==floor && !obstacle.collapsed && obstacle.solid!==false
+                    && rectanglesOverlap(x-6,y-8,PLAYER_WIDTH+66,PLAYER_HEIGHT+8,
+                        obstacle.x,obstacle.y,obstacle.width,obstacle.height));
+                const enemyNearby = enemies.some(enemy => enemy.alive
+                    && rectanglesOverlap(x-30,y-35,PLAYER_WIDTH+100,PLAYER_HEIGHT+35,
+                        enemy.x,enemy.y,enemy.width,enemy.height));
+                const pickupOverlap = items.some(item => !item.collected
+                    && rectanglesOverlap(x-6,y-6,PLAYER_WIDTH+12,PLAYER_HEIGHT+12,
+                        item.x-10,item.y-10,20,20));
+                if (!blocked && !enemyNearby && !pickupOverlap) starts.push({x,y});
+            }
+        }
+        return starts;
+    }
+
     function startAttractDemo() {
-        currentLevelIndex = 0;
+        // Alle baner kan vises, men aldrig samme bane to demoer i træk.
+        const excludeLast = levels.length>1 && lastDemoLevelIndex>=0;
+        currentLevelIndex = Math.floor(Math.random()*(levels.length-(excludeLast?1:0)));
+        if (excludeLast && currentLevelIndex>=lastDemoLevelIndex) currentLevelIndex+=1;
+        lastDemoLevelIndex = currentLevelIndex;
         resetRun();
+        const starts = getDemoStartPositions();
+        // En fremtidig meget kort bane uden egnede steder beholder sin normale
+        // start. Søgningen er endelig og kan aldrig hænge attract-loopet.
+        const start = starts[Math.floor(Math.random()*starts.length)];
+        if (start) {
+            Object.assign(player,{x:start.x,y:start.y,previousY:start.y});
+            cameraX=clamp(start.x-80,0,Math.max(0,getCurrentLevel().width-SCREEN_WIDTH));
+            resetPlayerTail();
+            if (dexRenderer) dexRenderer.reset();
+        }
         demoMode = true;
         demoElapsedSeconds = 0;
         demoJumpCooldownSeconds = 0.55;
@@ -934,7 +1008,8 @@
     function setMessage(text, duration) {
         if (text.startsWith('HINT:')) {
             if (!tutorialEnabled || demoMode) return;
-            const hint = { text: text.replace(/^HINT:\s*/, ''), remaining: Math.max(12, duration), duration: Math.max(12, duration) };
+            const hintDuration = Math.max(12, duration) * HINT_TIME_SCALE;
+            const hint = { text: text.replace(/^HINT:\s*/, ''), remaining: hintDuration, duration: hintDuration };
             if (!activeHint) activeHint = hint;
             else hintQueue.push(hint);
             return;
@@ -1028,6 +1103,7 @@
     }
 
     function respawn() {
+        if (dexRenderer) dexRenderer.reset();
         const savedScore = score;
         const savedLives = lives;
         resetRun({ keepScore: true, keepLives: true });
@@ -1297,9 +1373,9 @@
         // Tipsets læsetid følger væguret. Hele spilverdenen, inklusive BG,
         // projektiler, faldende gulve og tidsbonus, bruger samme slowmotion.
         const tutorialSlow = tutorialEnabled && !demoMode && activeHint;
-        // De sidste to sekunder øger hastigheden blødt fra 6% til normal.
+        // Den sidste del øger hastigheden blødt fra 6% til normal.
         // Alle spilure deler faktoren; tipsets nedtælling bruger fortsat væguret.
-        const resumeProgress = tutorialSlow ? clamp(1 - activeHint.remaining / 2, 0, 1) : 1;
+        const resumeProgress = tutorialSlow ? clamp(1 - activeHint.remaining / HINT_RESUME_SECONDS, 0, 1) : 1;
         const tutorialSpeed = 0.06 + 0.94 * resumeProgress * resumeProgress * (3 - 2 * resumeProgress);
         updateHints(deltaSeconds);
         if (tutorialSlow) deltaSeconds *= tutorialSpeed;
@@ -1317,6 +1393,7 @@
         messageTime = Math.max(0, messageTime - deltaSeconds);
         updateStageObstacles(deltaSeconds);
         updatePlayer(deltaSeconds);
+        if (dexRenderer) dexRenderer.advance(deltaSeconds, player);
         updatePlayerTail(deltaSeconds);
         updateEnemies(deltaSeconds);
         updateCheeseProjectiles(deltaSeconds);
@@ -1433,6 +1510,27 @@
         if (block.reward === 'diamonds') {
             collectedDiamondCount += 5;
             spawnScoreParticle(block.x+9,block.y,5*POINTS_PER_DIAMOND,' BONUS');
+            // En tydelig diamant springer ud, mens bonus stadig kun bogføres én gang.
+            particles.push({x:block.x+9,y:block.y-4,vx:0,vy:-48,life:0.8,maximumLife:0.8,
+                color:'#a1f4ff',text:'◆',fontSize:12});
+        } else if (block.reward === 'monster') {
+            const centerX = block.x + block.width / 2;
+            // Find en rigtig landingsflade ved siden af kassen. Indholdet er
+            // banedata, aldrig valgt efter spillerens BG eller udstyr.
+            const landingX = centerX + 48 - 11;
+            const floor = platforms.filter(p => !p.collapsed && !p.crumble
+                && p.y >= block.y + block.height && p.x <= landingX
+                && p.x+p.width >= landingX+22).sort((a,b)=>a.y-b.y)[0];
+            if (floor) {
+                const enemy = createEnemy({type:block.monsterType,x:landingX,y:floor.y-14,
+                    speed:20+currentLevelIndex,minX:Math.max(floor.x,landingX-35),
+                    maxX:Math.min(floor.x+floor.width,landingX+95)},enemies.length);
+                enemy.cacheEntrance = {age:0,x:centerX-11,y:block.y,
+                    landingX,landingY:floor.y-22};
+                enemy.x=centerX-11; enemy.y=block.y;
+                enemy.direction=1;
+                enemies.push(enemy);
+            }
         } else {
             // Genstanden springer ud ovenpå kassen og skal stadig samles op.
             items.push({type:block.reward,x:block.x+9,y:block.y-12,collected:false});
@@ -1465,14 +1563,42 @@
         player.eatAnticipation = 0;
         for (const [enemyIndex, enemy] of enemies.entries()) {
             if (enemy.biteAnimationTime > 0) {
+                const previousBiteTime = enemy.biteAnimationTime;
                 enemy.biteAnimationTime = Math.max(0, enemy.biteAnimationTime - deltaSeconds);
+                // Én lille saftsky ved selve slurpet, også hvis en langsom
+                // frame krydser tidspunktet. Ingen ekstra mad registreres her.
+                if (previousBiteTime > ENEMY_BITE_FRAME_SECONDS * 0.35
+                    && enemy.biteAnimationTime <= ENEMY_BITE_FRAME_SECONDS * 0.35) {
+                    const mouth = getEatingMouthPosition();
+                    spawnFoodPulp(mouth.x, mouth.y, enemy.type, player.facing, 12);
+                }
                 continue;
             }
             if (!enemy.alive) continue;
 
+            if (enemy.cacheEntrance) {
+                const entrance=enemy.cacheEntrance;
+                entrance.age += deltaSeconds;
+                // Først løftes figuren ud af åbningen, derefter hopper den
+                // til støttet jord. Ingen kontakt/angreb inde i selve kassen.
+                if (entrance.age < 0.35) {
+                    const t=entrance.age/0.35;
+                    enemy.y=entrance.y-enemy.height*t*t*(3-2*t);
+                } else {
+                    const t=clamp((entrance.age-0.35)/0.65,0,1);
+                    enemy.x=entrance.x+(entrance.landingX-entrance.x)*t;
+                    enemy.y=entrance.y-enemy.height
+                        +(entrance.landingY-(entrance.y-enemy.height))*t
+                        -Math.sin(t*Math.PI)*32;
+                    if(t===1) enemy.cacheEntrance=null;
+                }
+                continue;
+            }
+
             updateFizzState(enemy, enemyIndex, deltaSeconds);
             updatePizzaThrowState(enemy, enemyIndex, deltaSeconds);
             updateEggState(enemy, deltaSeconds);
+            if (!enemy.alive) continue;
 
             // En rystende Fizzler og et Pizza Monster i kasteoptræk står stille.
             // Spilleren kan derfor aflæse begge angreb før kontaktøjeblikket.
@@ -1571,24 +1697,67 @@
     }
 
     function updateEggState(enemy, dt) {
-        if (!enemy.eggDrop) return;
-        enemy.eggTimer -= dt;
-        if (enemy.eggState === 'perched' && Math.abs(player.x-enemy.x)<145) {
-            enemy.eggState='warning'; enemy.eggTimer=1.4;
-            enemy.direction=player.x<enemy.x?-1:1;
-        } else if (enemy.eggState === 'warning' && enemy.eggTimer<=0) {
-            enemy.eggState='falling'; enemy.eggVelocityY=0;
-        } else if (enemy.eggState === 'falling') {
-            enemy.x += enemy.direction*18*dt;
-            enemy.eggVelocityY += 220*dt; enemy.y += enemy.eggVelocityY*dt;
-            enemy.eggRotation += dt*3;
-            if(enemy.y+enemy.height>=getCurrentLevel().groundY) {
-                enemy.y=getCurrentLevel().groundY-enemy.height;
-                enemy.eggState='rolling'; enemy.eggTimer=2.6;
+        if (!enemy.eggDrop || !enemy.alive || !Number.isFinite(dt) || dt<=0) return;
+        const floors=[...platforms,...cacheBlocks].filter(p=>!p.collapsed);
+        // Små fysiktrin samt kontrol af den krydsede overflade forhindrer, at
+        // en langsom frame springer gennem et tyndt gulv eller en væg.
+        for(let remaining=dt;remaining>0 && enemy.alive;) {
+            const step=Math.min(remaining,1/120);remaining-=step;
+            if(enemy.eggState==='perched') {
+                if(Math.abs(player.x-enemy.x)<145) {
+                    enemy.eggState='warning';enemy.eggTimer=1.4;
+                    enemy.direction=player.x<enemy.x?-1:1;
+                }
+                continue;
             }
-        } else if (enemy.eggState === 'rolling') {
-            enemy.x += enemy.direction*65*dt; enemy.eggRotation += enemy.direction*dt*6;
-            if (enemy.eggTimer<=0) { enemy.eggState='resting'; enemy.eggRotation=0; }
+            if(enemy.eggState==='warning') {
+                enemy.eggTimer-=step;
+                enemy.eggTuck=clamp(1-enemy.eggTimer/.24,0,1);
+                if(enemy.eggTimer<=0) {
+                    // Rul først hen til kanten af afsatsen. Ignorér aldrig
+                    // afsatsen for at tvinge et fald gennem den.
+                    enemy.eggState='rolling';enemy.eggTimer=2.6;enemy.eggVelocityY=0;
+                }
+                continue;
+            }
+            const rolling=enemy.eggState==='rolling'||enemy.eggState==='falling';
+            const oldX=enemy.x,oldBottom=enemy.y+enemy.height;
+            if(rolling) enemy.x+=enemy.direction*EGG_ROLL_SPEED*step;
+            for(const wall of floors) {
+                if(!wall.solid || enemy.y>=wall.y+wall.height || oldBottom<=wall.y+.01) continue;
+                if(enemy.x>oldX && oldX+enemy.width<=wall.x+.01 && enemy.x+enemy.width>=wall.x) {
+                    enemy.x=wall.x-enemy.width;enemy.direction=-1;
+                } else if(enemy.x<oldX && oldX>=wall.x+wall.width-.01 && enemy.x<=wall.x+wall.width) {
+                    enemy.x=wall.x+wall.width;enemy.direction=1;
+                }
+            }
+            const maximumX=getCurrentLevel().width-enemy.width;
+            if(enemy.x<0){enemy.x=0;enemy.direction=1;}
+            if(enemy.x>maximumX){enemy.x=maximumX;enemy.direction=-1;}
+            if(rolling) enemy.eggRotation+=(enemy.x-oldX)/EGG_ROLL_RADIUS;
+            enemy.eggVelocityY+=220*step;
+            enemy.y+=enemy.eggVelocityY*step;
+            const landing=floors.filter(floor=>oldBottom<=floor.y+.01
+                && enemy.y+enemy.height>=floor.y
+                && enemy.x+enemy.width>floor.x+1 && enemy.x<floor.x+floor.width-1)
+                .sort((a,b)=>a.y-b.y)[0];
+            if(landing) {
+                enemy.y=landing.y-enemy.height;enemy.eggVelocityY=0;
+                if(rolling) {
+                    enemy.eggTimer-=step;
+                    enemy.eggState=enemy.eggTimer>0?'rolling':'resting';
+                }
+            } else enemy.eggState='falling';
+            if(enemy.eggState==='resting') {
+                // Ret skallen op før benene foldes ud igen, uden et brat
+                // spring fra den aktuelle rotation til nul grader.
+                const angle=Math.atan2(Math.sin(enemy.eggRotation),Math.cos(enemy.eggRotation));
+                enemy.eggRotation-=angle*Math.min(1,step*14);
+                if(Math.abs(angle)<.2) enemy.eggTuck=Math.max(0,enemy.eggTuck-step*5);
+            } else enemy.eggTuck=Math.min(1,enemy.eggTuck+step*6);
+            // Rigtige huller er stadig huller; der findes ikke et usynligt
+            // gulv i groundY. Fjern først ægget, når det er ude af billedet.
+            if(enemy.y>SCREEN_HEIGHT-HUD_HEIGHT+100) enemy.alive=false;
         }
     }
 
@@ -1716,14 +1885,13 @@
     function eatEnemy(enemy) {
         enemy.alive = false;
         enemy.biteAnimationTime = ENEMY_BITE_FRAME_SECONDS;
-        enemy.biteSide = player.x < enemy.x ? -1 : 1;
         // Figuren vender altid den store mund mod måltidet, også hvis
         // sidekollisionen sker lige efter et retningsskift.
         player.facing = enemy.x + enemy.width / 2 >= player.x + PLAYER_WIDTH / 2
             ? 1 : -1;
-        // Nærhedsanimationen har allerede vist optrækket. Ved kontakt starter
-        // sekvensen derfor direkte på den store åbne mund (frame 3 af 8).
-        player.eatAnimationTime = EAT_ANIMATION_SECONDS * 0.74;
+        // Indtrækningen får 0,66 sekunder og efterfølges af en kort tygning.
+        // 3D-munden holdes åben til sidste del af indtrækningen er overstået.
+        player.eatAnimationTime = EAT_ANIMATION_SECONDS * 0.9;
         player.eatAnticipation = 0;
         player.vx *= 0.34;
 
@@ -1744,11 +1912,12 @@
             `${monsterProfile.name} +${portionCarbs}g CARBS`,
             1,
         );
-        spawnParticles(
+        spawnFoodPulp(
             enemy.x + enemy.width / 2,
             enemy.y + enemy.height / 2,
-            enemy.type === 'soda' ? '#68efff' : '#ffbf62',
-            10,
+            enemy.type,
+            player.facing,
+            5,
         );
         audio.eat();
         spawnMacroParticles(enemy.x+11,enemy.y,{carbs:portionCarbs,
@@ -1923,6 +2092,30 @@
                 life: 0.45,
                 color,
             });
+        }
+    }
+
+    function spawnFoodPulp(x, y, type, facing, count) {
+        // Indmadens farver, ikke skrællens. Små stiliserede madstykker og
+        // saftdråber; ingen blodfarver eller ændringer i makronæringsstoffer.
+        const palette = {
+            apple: ['#fff0bc', '#f3d88c', '#fff9df'],
+            banana: ['#fff3b0', '#e8cf76', '#fff9d8'],
+            avocado: ['#d8e883', '#a6c85b', '#edf2bc'],
+            egg: ['#fff8df', '#ffc543', '#fffef1'],
+            cake: ['#e7bd7b', '#fff1ce', '#c28a52'],
+            burger: ['#e4b565', '#83b94e', '#a97442'],
+            pizza: ['#ffda72', '#edb344', '#f4d09b'],
+            soda: ['#ffc24e', '#ffdf92', '#f59b35'],
+        }[type] || ['#fff0bc', '#e7bd7b'];
+        for (let index = 0; index < count; index += 1) {
+            const maximumLife = .35 + (index % 4) * .065;
+            particles.push({kind:'food-pulp', x, y,
+                vx:facing * (10 + (index * 17 % 31)), vy:-17-(index * 13 % 29),
+                gravity:105, life:maximumLife, maximumLife,
+                size:.7+(index % 3)*.4, color:palette[index % palette.length],
+                rotation:index*1.7, spin:(index % 2 ? 1 : -1)*7,
+                droplet:type==='soda'||index % 3===0});
         }
     }
 
@@ -2170,10 +2363,28 @@
         context.save();
         for(const block of cacheBlocks) {
             const y=block.y-Math.sin(block.bumpTime/0.2*Math.PI)*2;
-            context.fillStyle=block.used?'#434252':'#284354';context.fillRect(block.x,y,block.width,block.height);
-            context.strokeStyle=block.used?'#747585':'#85efff';context.lineWidth=0.8;context.strokeRect(block.x+1,y+1,block.width-2,block.height-2);
-            context.fillStyle='#b5f7ff';context.font='bold 7px monospace';context.textAlign='center';
-            context.fillText(block.used?'·':block.reward==='diamonds'?'◆':block.reward==='candy'?'A':'Z',block.x+9,y+11);
+            if(block.x+block.width<cameraX || block.x>cameraX+SCREEN_WIDTH) continue;
+            const face=context.createLinearGradient(block.x,y,block.x,y+block.height);
+            face.addColorStop(0,block.used?'#515365':'#6a4eaa');
+            face.addColorStop(1,block.used?'#303341':'#29224f');
+            context.fillStyle=face;context.fillRect(block.x,y,block.width,block.height);
+            context.strokeStyle=block.used?'#747585':'#8fefff';context.lineWidth=0.8;
+            context.strokeRect(block.x+0.6,y+0.6,block.width-1.2,block.height-1.2);
+            context.fillStyle=block.used?'#747585':'#ffe5a0';
+            for(const dx of [2,block.width-3]) for(const dy of [2,block.height-3])
+                context.fillRect(block.x+dx,y+dy,1,1);
+            context.save();
+            const phase=elapsedRealSeconds*3+block.x*0.035;
+            context.translate(block.x+block.width/2,y+block.height/2+0.5);
+            if(!block.used) {
+                context.translate(0,Math.sin(phase)*0.65);
+                context.scale(0.87+0.13*Math.cos(phase),1);
+                context.shadowColor='#6df4ff';context.shadowBlur=2+Math.sin(phase)*0.6;
+            }
+            context.font='bold 12px monospace';context.textAlign='center';context.textBaseline='middle';
+            context.fillStyle=block.used?'#8a8c9f':'#fff1bb';
+            context.fillText(block.used?'·':'?',0,0);
+            context.restore();
         }
         context.restore();
     }
@@ -2247,18 +2458,86 @@
     }
 
     function drawFinish() {
-        const x = getCurrentLevel().finishX;
-        context.fillStyle = '#351f58';
-        context.fillRect(x, 99, 34, 55);
-        context.fillStyle = '#f07857';
-        context.fillRect(x - 4, 96, 42, 7);
-        context.fillStyle = '#6ee3c1';
-        context.fillRect(x + 10, 119, 14, 35);
-        context.fillStyle = '#ffe779';
-        context.fillRect(x + 16, 134, 3, 3);
-        context.fillStyle = '#ffffff';
-        context.font = '7px monospace';
-        context.fillText('GOAL', x + 8, 92);
+        const level = getCurrentLevel();
+        // Målstregen ligger under DEX' centrum, når hans venstre kant passerer
+        // det eksisterende finishX. Portalen er kun pynt, ikke en ny forhindring.
+        const centerX = level.finishX + PLAYER_WIDTH / 2;
+        const groundY = level.groundY;
+        const left = centerX - 32, right = centerX + 32;
+        const top = groundY - 66;
+        if (right < cameraX - 10 || left > cameraX + SCREEN_WIDTH + 10) return;
+
+        context.save();
+        context.lineJoin = 'round';
+
+        // Smalle metalstandere og tunge fødder forankrer målet i banens gulv.
+        for (const poleX of [left, right]) {
+            const metal = context.createLinearGradient(poleX - 2, 0, poleX + 2, 0);
+            metal.addColorStop(0, '#28364f');
+            metal.addColorStop(0.35, '#f1f4ff');
+            metal.addColorStop(0.65, '#8894b5');
+            metal.addColorStop(1, '#35415c');
+            context.fillStyle = metal;
+            context.fillRect(poleX - 2, top - 4, 4, groundY - top + 4);
+            context.fillStyle = '#242640';
+            context.fillRect(poleX - 4, groundY - 2, 8, 2);
+            context.fillStyle = '#a8b6d5';
+            context.fillRect(poleX - 3, groundY - 2, 6, 0.6);
+            for (let band = 0; band < 7; band++) {
+                context.fillStyle = band % 2 ? '#eef4ff' : '#242640';
+                context.fillRect(poleX - 1.6, groundY - 32 + band * 4, 3.2, 4);
+            }
+            context.fillStyle = '#ffce63';
+            context.beginPath();
+            context.arc(poleX, top - 4, 2.5, 0, Math.PI * 2);
+            context.fill();
+        }
+
+        // Et sammenhængende stofbanner med ganske let bevægelse i underkanten.
+        // Teksten bevæges ikke, så FINISH forbliver læselig under løb.
+        const flutter = Math.sin(elapsedRealSeconds * 3.2) * 0.65;
+        const banner = context.createLinearGradient(0, top, 0, top + 17);
+        banner.addColorStop(0, '#ffd66e');
+        banner.addColorStop(0.16, '#ff864d');
+        banner.addColorStop(1, '#bc245d');
+        context.beginPath();
+        context.moveTo(left, top);
+        context.quadraticCurveTo(centerX, top + 2, right, top);
+        context.lineTo(right, top + 16);
+        context.quadraticCurveTo(centerX, top + 19 + flutter, left, top + 16);
+        context.closePath();
+        context.fillStyle = banner;
+        context.fill();
+        context.strokeStyle = '#ffe8a4';
+        context.lineWidth = 0.7;
+        context.stroke();
+
+        // Sort/hvide tern i begge ender giver et løbsmål-signal på afstand.
+        for (const flagX of [left + 2, right - 8]) {
+            for (let row = 0; row < 4; row++) {
+                for (let column = 0; column < 2; column++) {
+                    context.fillStyle = (row + column) % 2 ? '#242640' : '#fff7e8';
+                    context.fillRect(flagX + column * 3, top + 2 + row * 3, 3, 3);
+                }
+            }
+        }
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.font = 'italic 900 9px monospace';
+        context.lineWidth = 1.2;
+        context.strokeStyle = '#692348';
+        context.strokeText('FINISH', centerX, top + 9, 43);
+        context.fillStyle = '#fff9db';
+        context.fillText('FINISH', centerX, top + 9, 43);
+
+        // En kort ternet streg på selve løbefladen erstatter hyttens dør.
+        for (let row = 0; row < 2; row++) {
+            for (let column = 0; column < 6; column++) {
+                context.fillStyle = (row + column) % 2 ? '#242640' : '#fff7e8';
+                context.fillRect(centerX - 6 + column * 2, groundY - 1 + row * 1.5, 2, 1.5);
+            }
+        }
+        context.restore();
     }
 
     function drawDiamonds() {
@@ -2482,20 +2761,26 @@
     function drawEnemies() {
         for (const [enemyIndex, enemy] of enemies.entries()) {
             if (!enemy.alive && enemy.biteAnimationTime <= 0) continue;
-            // En fjende i gang med at blive spist tegnes særskilt inde i
-            // mundmasken efter spillerfiguren, ikke bagved hele figuren her.
-            if (enemy.biteAnimationTime > 0 && player.eatAnimationTime > 0) continue;
+            // Hele indtrækningen tegnes efter DEX med mund-/læbeklip,
+            // så den hverken forsvinder bag kroppen eller dækker øjnene.
+            if (enemy.biteAnimationTime > 0) continue;
+            context.save();
+            try {
+            if(enemy.cacheEntrance && enemy.cacheEntrance.age<0.35) {
+                // Klip kun indgangsanimationen ved kassens åbning, ikke alpha på figuren.
+                context.beginPath();context.rect(enemy.x-20,-100,65,enemy.cacheEntrance.y+100);
+                context.clip();
+            }
             const enemyGroundOffset = enemy.type === 'pizza'
                 ? PIZZA_GROUND_OFFSET
                 : CHARACTER_GROUND_OFFSET;
             const image = characterImages[enemy.type];
+            if(enemy.type==='egg' && enemy.eggDrop && image && image.complete && image.naturalWidth>0) {
+                drawRollingEgg(enemy,image);
+                continue;
+            }
             if (image && image.complete && image.naturalWidth > 0) {
                 const spriteSize = 31;
-                const spriteX = enemy.x + (enemy.width - spriteSize) / 2;
-                const spriteY = enemy.y + enemy.height + enemyGroundOffset - spriteSize;
-                const showingBiteFrame = enemy.biteAnimationTime > 0;
-
-                if (!showingBiteFrame) {
                     const motionFrames = [
                         { scaleX: 1.06, scaleY: 0.94, lift: 0, rotation: -0.035 },
                         { scaleX: 1.02, scaleY: 0.98, lift: 0.5, rotation: -0.018 },
@@ -2534,7 +2819,7 @@
                         bottomY - pose.lift + shakeY,
                     );
                     context.rotate(
-                        (enemy.eggState==='warning'?Math.sin(elapsedRealSeconds*35)*0.12:pose.rotation * enemy.direction) + (enemy.eggRotation || 0)
+                        pose.rotation * enemy.direction
                         + shakeRotation
                         - enemy.direction * Math.sin(throwProgress * Math.PI) * 0.11,
                     );
@@ -2555,29 +2840,6 @@
                     drawFizzStateEffect(enemy, centerX, bottomY, spriteSize, enemyIndex);
                     drawPizzaThrowWindup(enemy, centerX, bottomY, spriteSize);
                     continue;
-                }
-
-                context.save();
-                // Den ydre firkant bevares, mens 3 overlappende cirkler
-                // trækkes fra med evenodd-klip. Under den længere bidframe
-                // krymper og drejer resten af fjenden, før den forsvinder.
-                const biteProgress = 1 - enemy.biteAnimationTime / ENEMY_BITE_FRAME_SECONDS;
-                const biteX = enemy.biteSide < 0 ? spriteX + 2 : spriteX + spriteSize - 2;
-                const biteDirection = enemy.biteSide < 0 ? 1 : -1;
-                const biteY = spriteY + spriteSize * 0.46;
-                context.beginPath();
-                context.rect(spriteX - 1, spriteY - 1, spriteSize + 2, spriteSize + 2);
-                context.arc(biteX, biteY, 5.2 + biteProgress * 3, 0, Math.PI * 2);
-                context.arc(biteX + biteDirection * 2.5, biteY - 4.5, 3.8, 0, Math.PI * 2);
-                context.arc(biteX + biteDirection * 2.5, biteY + 4.5, 3.8, 0, Math.PI * 2);
-                context.clip('evenodd');
-                context.translate(spriteX + spriteSize / 2, spriteY + spriteSize / 2);
-                context.rotate(biteDirection * biteProgress * 0.22);
-                context.scale(1 - biteProgress * 0.34, 1 - biteProgress * 0.18);
-                context.globalAlpha = Math.min(1, enemy.biteAnimationTime / 0.10);
-                context.drawImage(image, -spriteSize / 2, -spriteSize / 2, spriteSize, spriteSize);
-                context.restore();
-                continue;
             }
 
             context.fillStyle = enemy.type === 'soda'
@@ -2602,7 +2864,48 @@
                 31,
                 enemyIndex,
             );
+            } finally { context.restore(); }
         }
+    }
+
+    function getEggRenderPose(enemy) {
+        const tuck=clamp(enemy.eggTuck||0,0,1);
+        const angle=enemy.eggState==='warning'
+            ? Math.sin(elapsedRealSeconds*35)*.045*(1-tuck) : enemy.eggRotation;
+        // Skallens lodrette udstrækning ændrer sig, når ægget ligger på siden.
+        // Hold den nederste skalrand ved kontaktfladen, ikke benenes gamle pivot.
+        const shellDepth=Math.max(...EGG_SHELL_POINTS.map(point=>
+            point.x*enemy.direction*Math.sin(angle)+point.y*Math.cos(angle)))*31/512;
+        return {x:enemy.x+enemy.width/2,
+            y:enemy.y+enemy.height-shellDepth-4.6*(1-tuck),angle,tuck,shellDepth};
+    }
+
+    function drawRollingEgg(enemy,image) {
+        const pose=getEggRenderPose(enemy);
+        if(enemy.eggState==='warning') {
+            context.fillStyle='#ffd664';context.font='bold 9px monospace';
+            context.fillText('!',pose.x,enemy.y-5);
+        }
+        context.save();context.translate(pose.x,pose.y);context.rotate(pose.angle);
+        context.scale(enemy.direction*31/512,31/512);
+        // Den eksisterende rendering deles i skal og to ben. Benene drejer
+        // ind mod kroppen og trækkes bag skallen; de falmer ikke blot væk.
+        if(pose.tuck<.999) for(let leg=0;leg<2;leg++) {
+            const side=leg===0?-1:1,hipX=leg===0?-86:75,hipY=132-45*pose.tuck;
+            context.save();context.translate(hipX,hipY);
+            context.rotate(side*pose.tuck*1.4);
+            context.scale(1-.3*pose.tuck,1-.85*pose.tuck);
+            context.drawImage(image,leg*image.naturalWidth/2,image.naturalHeight*374/512,
+                image.naturalWidth/2,image.naturalHeight*138/512,
+                leg*256-270-hipX,374-244-132,256,138);
+            context.restore();
+        }
+        // Omridset følger æggeskallen i food-egg.png, så ingen flad afklippet
+        // kant eller grønne sko bliver en del af den roterende skal.
+        context.translate(-270,-244);context.beginPath();context.moveTo(269,89);
+        for(const curve of EGG_SHELL_CURVES) context.bezierCurveTo(...curve);
+        context.closePath();context.clip();context.drawImage(image,0,0,512,512);
+        context.restore();
     }
 
     function drawWalkingEnemySprite(image, spriteSize, enemyType, walkPhase, isMoving) {
@@ -2738,44 +3041,59 @@
         }
     }
 
-    function drawEatenEnemyInMouth() {
-        if (player.eatAnimationTime <= 0) return;
-        const enemy = enemies.find((candidate) => candidate.biteAnimationTime > 0);
-        if (!enemy) return;
-
+    function getEatingMouthPosition() {
         const pose = getPlayerAnimationPose();
-        if (!['eat-open-wide', 'eat-engulf', 'eat-chomp'].includes(pose.name)) return;
-        const image = characterImages[enemy.type];
-        if (!image || !image.complete || image.naturalWidth <= 0) return;
+        const anchor = dexRenderer && dexRenderer.available ? dexRenderer.mouthAnchor
+            : {x:player.facing*(5.8+(pose.forward||0)), y:CHARACTER_GROUND_OFFSET-(pose.lift||0)-18.5};
+        return {x:player.x+PLAYER_WIDTH/2+anchor.x, y:player.y+PLAYER_HEIGHT+anchor.y};
+    }
 
-        const spriteSize = pose.spriteSize || 32;
-        const centerX = player.x + PLAYER_WIDTH / 2
-            + player.facing * (pose.forward || 0);
-        const visualBottom = player.y + PLAYER_HEIGHT + CHARACTER_GROUND_OFFSET;
-        const biteProgress = 1 - enemy.biteAnimationTime / ENEMY_BITE_FRAME_SECONDS;
-        const foodSize = 11 * (1 - clamp(biteProgress, 0, 1) * 0.34);
+    function getEatingFoodPose(enemy, mouth = getEatingMouthPosition()) {
+        const progress = clamp(1-enemy.biteAnimationTime/ENEMY_BITE_FRAME_SECONDS, 0, 1);
+        const pull = progress*progress*(3-2*progress);
+        const startX = enemy.x+enemy.width/2;
+        const startY = enemy.y+enemy.height
+            +(enemy.type==='pizza'?PIZZA_GROUND_OFFSET:CHARACTER_GROUND_OFFSET)-31/2;
+        // Start med hele figuren på dens faktiske plads, løft den mod munden
+        // og krymp til præcis nul. Slutpunktet følger DEX, også under bevægelse.
+        return {x:startX+(mouth.x-startX)*pull,
+            y:startY+(mouth.y-startY)*pull-Math.sin(progress*Math.PI)*2,
+            size:31*Math.pow(1-progress,1.15),
+            rotation:-player.facing*Math.sin(progress*Math.PI)*.32,
+            direction:enemy.direction || 1, progress};
+    }
 
-        context.save();
-        context.translate(centerX, visualBottom - pose.lift);
-        context.rotate(pose.rotation * player.facing);
-        context.scale(player.facing, 1);
-
-        // Ellipsen ligger inden for den mørke mundhule i devour-framen. Den
-        // spiste fjende bliver derfor synlig oven på mundhulen, men klippes væk
-        // før den kan dække læber, øjne eller resten af kroppen.
-        context.beginPath();
-        context.ellipse(3.2, -19.2, 8.1, 9.4, -0.08, 0, Math.PI * 2);
-        context.clip();
-        context.translate(5.8 - biteProgress * 3.2, -18.5 + biteProgress * 1.5);
-        context.rotate(player.facing * biteProgress * 0.32);
-        context.drawImage(image, -foodSize / 2, -foodSize / 2, foodSize, foodSize);
-        context.restore();
+    function drawEatenEnemyInMouth() {
+        for (const enemy of enemies) {
+            if (enemy.biteAnimationTime<=0) continue;
+            const image = characterImages[enemy.type];
+            if (!image || !image.complete || image.naturalWidth<=0) continue;
+            const food = getEatingFoodPose(enemy);
+            if (dexRenderer && dexRenderer.available) {
+                dexRenderer.drawFood(context, image, player.x+PLAYER_WIDTH/2,
+                    player.y+PLAYER_HEIGHT, food, player.facing);
+                continue;
+            }
+            // Sprite-reserven bruger samme flyvebane og nul-slutstørrelse.
+            const mouth = getEatingMouthPosition();
+            context.save();context.beginPath();
+            context.ellipse(mouth.x,mouth.y,7.5,8.5,0,0,Math.PI*2);
+            context.rect(player.facing>0?mouth.x+6:mouth.x-1006,mouth.y-1000,1000,2000);
+            context.clip();context.translate(food.x,food.y);context.rotate(food.rotation);
+            context.scale(food.direction,1);
+            context.drawImage(image,-food.size/2,-food.size/2,food.size,food.size);
+            context.restore();
+        }
     }
 
     function drawPlayer() {
         const blinkingDuringDeath = gameState === 'dying'
             && Math.floor(deathTime * 14) % 2 === 0;
         if (blinkingDuringDeath) return;
+        if (dexRenderer && dexRenderer.draw(context, player.x + PLAYER_WIDTH / 2,
+            player.y + PLAYER_HEIGHT, {player, bg:getGameBG(), fatigue:getHighBGFatigue(),
+                gear:autoPumpActive?'backpack':pumpActive?'pump':'none', stock:pumpInsulinStored,
+                time:elapsedRealSeconds, dying:gameState==='dying'})) return;
 
         const pose = getPlayerAnimationPose();
         const image = pose.image;
@@ -3257,22 +3575,26 @@
     function drawPlayerActionEffects() {
         if (gameState !== 'playing') return;
         const centerX = player.x + PLAYER_WIDTH / 2;
-        const feetY = player.y + PLAYER_HEIGHT + CHARACTER_GROUND_OFFSET;
+        const is3D = dexRenderer && dexRenderer.available;
+        const feetY = player.y + PLAYER_HEIGHT + (is3D ? 0 : CHARACTER_GROUND_OFFSET);
         const pose = getPlayerAnimationPose();
         context.save();
-        context.translate(centerX + player.facing * (pose.forward || 0), feetY - pose.lift);
+        context.translate(centerX + (is3D ? 0 : player.facing * (pose.forward || 0)), feetY - (is3D ? 0 : pose.lift));
         context.scale(player.facing, 1);
         if (player.candyUseTime > 0) {
             const progress = 1 - player.candyUseTime / 0.9;
             // Bolsjet flyttes fra hånden ind i den allerede åbnede mund og
             // bliver mindre under biddet. Ingen forsinkelse af modelinputtet.
             const bite = clamp((progress - 0.2) / 0.65, 0, 1);
-            const candyX = 16 - bite * 12;
-            const candyY = -12 - Math.sin(bite * Math.PI / 2) * 4;
-            context.fillStyle = '#9b3bc4';
-            context.beginPath();
-            context.ellipse(candyX + 1, candyY + 3, 2.7, 1.8, -0.4, 0, Math.PI * 2);
-            context.fill();
+            const mouth = is3D ? dexRenderer.mouthAnchor : null;
+            const candyX = is3D ? 16 + (mouth.x * player.facing - 16) * bite : 16 - bite * 12;
+            const candyY = is3D ? -9 + (mouth.y + 9) * bite : -12 - Math.sin(bite * Math.PI / 2) * 4;
+            if (!is3D) {
+                context.fillStyle = '#9b3bc4';
+                context.beginPath();
+                context.ellipse(candyX + 1, candyY + 3, 2.7, 1.8, -0.4, 0, Math.PI * 2);
+                context.fill();
+            }
             drawPickup('candy', candyX, candyY, Math.max(0.2, 9 * (1 - bite)), false);
         }
         if (player.insulinUseTime > 0) {
@@ -3406,7 +3728,10 @@
     function getPlayerAnimationPose() {
         if (player.eatAnimationTime > 0) {
             const progress = clamp(1 - player.eatAnimationTime / EAT_ANIMATION_SECONDS, 0, 0.999);
-            const frameIndex = Math.floor(progress * 8);
+            const swallowingTime = Math.max(0,...enemies.map(enemy=>enemy.biteAnimationTime));
+            const frameIndex = swallowingTime>0
+                ? Math.min(4,2+Math.floor((1-swallowingTime/ENEMY_BITE_FRAME_SECONDS)*3))
+                : Math.floor(progress * 8);
             const eatFrames = [
                 { name: 'eat-brake', image: characterImages.idle, spriteSize: 32, scaleX: 1, scaleY: 1, lift: 0, rotation: 0, forward: 0 },
                 { name: 'eat-windup', image: characterImages.eat, spriteSize: 35, scaleX: 1, scaleY: 1, lift: 0, rotation: -0.025, forward: 1.5 },
@@ -3498,6 +3823,19 @@
 
     function drawParticles() {
         for (const particle of particles) {
+            if (particle.kind === 'food-pulp') {
+                const fraction = clamp(particle.life/particle.maximumLife,0,1);
+                const size = particle.size*(.3+.7*Math.sqrt(fraction));
+                context.save();context.translate(particle.x,particle.y);context.rotate(particle.rotation);
+                context.globalAlpha=Math.min(1,fraction*3);
+                context.fillStyle=particle.color;context.beginPath();
+                if (particle.droplet) context.ellipse(0,0,size,size*.6,0,0,Math.PI*2);
+                else {
+                    context.moveTo(-size,-size*.5);context.lineTo(size*.3,-size);
+                    context.lineTo(size,size*.2);context.lineTo(-size*.4,size);context.closePath();
+                }
+                context.fill();context.restore();continue;
+            }
             if (particle.text) {
                 const visibleFraction = clamp(
                     particle.life / particle.maximumLife,
@@ -3506,7 +3844,7 @@
                 );
                 context.save();
                 context.globalAlpha = Math.min(1, visibleFraction * 1.8);
-                context.font = 'bold 7px monospace';
+                context.font = `bold ${particle.fontSize || 7}px monospace`;
                 context.textAlign = 'center';
                 context.textBaseline = 'middle';
                 context.lineWidth = 2.5;
@@ -3834,8 +4172,8 @@
         if (hintText) {
             hintTimer.max = activeHint.duration;
             hintTimer.value = Math.max(0, activeHint.remaining);
-            hintTimerLabel.textContent = activeHint.remaining > 2
-                ? `RESUMING IN ${Math.ceil(activeHint.remaining - 2)}s`
+            hintTimerLabel.textContent = activeHint.remaining > HINT_RESUME_SECONDS
+                ? `RESUMING IN ${Math.ceil(activeHint.remaining - HINT_RESUME_SECONDS)}s`
                 : 'RETURNING TO FULL SPEED';
         }
         if (gameState !== 'playing') return;
@@ -3926,6 +4264,8 @@
         // Kun til reproducerbare browsertests af udstyr og andre pickups.
         debugPlaceNearItem,
         getSnapshot: () => ({
+            playerRenderer: dexRenderer && dexRenderer.available ? '3d' : 'sprite',
+            player3DFrames: dexRenderer ? dexRenderer.renderCount : 0,
             gameState,
             stage: currentLevelIndex + 1,
             x: player.x,

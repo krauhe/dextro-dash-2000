@@ -13,6 +13,9 @@ for(const motion of ['idle','run','jump','eat','inspect','curious','pant'])for(c
 }
 assert.deepEqual(rig.pose('run',0),rig.pose('run',1));
 dex.update(.25,{motion:'run'});assert.ok(dex.legs[0].hip.rotation.x>0);assert.ok(dex.legs[1].hip.rotation.x<0);
+assert.ok(Math.abs(dex.legs[0].hip.rotation.x-1.05)<1e-8,'longer rear push-off');
+assert.ok(Math.abs(dex.legs[1].hip.rotation.x+.65)<1e-8,'front reach unchanged');
+dex.update(.75,{motion:'run'});assert.ok(Math.abs(dex.legs[1].hip.rotation.x-1.05)<1e-8,'both legs share rear reach');
 for(const opening of [0,.5,1]){dex.update(0,{autoMouth:false,mouth:opening});for(const n of dex.faceGeometry.attributes.normal.array)assert.ok(Number.isFinite(n));}
 dex.setSkin('clay');assert.equal(dex.skin.map,null);
 dex.setSkin('mint');assert.ok(dex.skin.map);assert.equal(dex.skinName,'mint');
@@ -66,11 +69,18 @@ assert.ok(dex.gazes[0].rotation.x>.4);assert.ok(dex.legs[0].hip.rotation.x<-.9);
 assert.ok(dex.update(0,{motion:'idle',idleSeconds:16,lookYaw:-.5}).curious>.99);
 assert.ok(dex.torso.rotation.y<-.4);
 const resumed=dex.update(0,{motion:'run',idleSeconds:16});assert.equal(resumed.inspect,0);assert.equal(resumed.curious,0);
-const resting=dex.update(0,{motion:'idle',clock:.25,effort:0});const panting=dex.update(0,{motion:'run',clock:.25,effort:1});
-assert.ok(panting.effort>resting.effort);assert.ok(dex.torso.scale.y>1);
+const resting=dex.update(0,{motion:'run',clock:.25,effort:0});const restingHeight=dex.torso.scale.y;
+const panting=dex.update(0,{motion:'run',clock:.25,effort:1});
+assert.ok(panting.effort>resting.effort);assert.ok(dex.torso.scale.y>restingHeight);
 // Manuel mundstyring og spisning må ikke overstyres af åndedrættet.
 dex.update(0,{motion:'run',effort:1,autoMouth:false,mouth:0});assert.ok(dex.teeth.every(t=>!t.mesh.visible));
 const fs=require('node:fs'),html=fs.readFileSync(require('node:path').join(__dirname,'../docs/dex-3d.html'),'utf8');
+dex.update(.25,{motion:'run'});const runTall=dex.torso.scale.y;
+dex.update(0,{motion:'run'});assert.ok(Math.abs(runTall-dex.torso.scale.y-.04)<1e-8,'subtle running deformation, not bouncing');
+dex.update(.25,{motion:'jump',verticalSpeed:-218,landing:0});assert.ok(dex.torso.scale.y>1.1,'upward stretch');
+dex.update(0,{motion:'idle',landing:1});assert.ok(dex.torso.scale.y<.8,'landing squash');
+assert.ok(Math.abs(dex.torso.scale.x*dex.torso.scale.y*dex.torso.scale.z-1)<1e-6,'preserve body volume');
+assert.ok(Math.abs(dex.backpack.scale.y*dex.torso.scale.y-1)<1e-6,'equipment does not squash');
 assert.equal(rig.bgDroop(6),0);assert.equal(rig.bgDroop(2.5),1);assert.equal(rig.bgDroop(19),1);
 const cells=dex.backpack.children.filter(c=>c.name==='insulin-cylinder');assert.equal(cells.length,3);
 for(let stock=0;stock<=3;stock++){dex.update(0,{gear:'backpack',stock});assert.equal(cells.filter(c=>c.material.emissiveIntensity>0).length,stock);}
@@ -78,7 +88,16 @@ assert.ok(new Set(cells.map(c=>c.position.z)).size===3);
 for(const bg of [2.5,3,4,6,10,14,19,22]){
     dex.update(.25,{bg});
     assert.equal(dex.quills.length,3);
-    assert.ok(dex.quills.every(q=>Math.abs(q.rotation.x-(q.userData.restAngle*(1-rig.bgDroop(bg))-2.1*rig.bgDroop(bg)))<1e-8));
+    assert.ok(dex.quills.every(q=>q.rotation.x===q.userData.restAngle));
+    for(const q of dex.quills){
+        const p=q.userData.mesh.geometry.attributes.position;
+        for(let k=0;k<11;k++){
+            assert.ok(Math.abs(p.getX(k)-q.userData.base[k*3])<1e-6);
+            assert.ok(Math.abs(p.getY(k))<1e-6);
+            assert.ok(Math.abs(p.getZ(k)-q.userData.base[k*3+2])<1e-6,'root never peels away');
+        }
+        assert.ok([...p.array].every(Number.isFinite));
+    }
     dex.group.updateMatrixWorld(true);
     const positions=dex.tail.geometry.attributes.position;
     for(let i=0;i<positions.count;i++)assert.ok(new THREE.Vector3().fromBufferAttribute(positions,i).applyMatrix4(dex.tail.matrixWorld).y>=.02499);
