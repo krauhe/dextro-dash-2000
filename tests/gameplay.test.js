@@ -23,7 +23,7 @@ function createGame() {
     const elements = new Map();
     function element(id) {
         if (!elements.has(id)) elements.set(id, {
-            textContent: '', dataset: {}, classList: {add: noop, remove: noop, toggle: noop},
+            textContent: '', dataset: {}, style: {}, classList: {add: noop, remove: noop, toggle: noop},
             setAttribute: noop, addEventListener: noop, focus: noop, getContext: () => context,
         });
         return elements.get(id);
@@ -60,6 +60,7 @@ function createGame() {
                 setTutorialEnabled, updateEggState, updateEnemies, updateStageObstacles, hitCacheBlock,
                 updateKeyboardSketch, drawKeyboardSketch, startNextLevel,
                 get keyboardPickups(){return keyboardActionPickups;},
+                set camera(value){cameraX=value;},
                 get platforms(){return platforms;}, get blocks(){return cacheBlocks;}, get enemies(){return enemies;},
                 get tutorialEnabled(){return tutorialEnabled;},
                 getPickupAnimationFrame, drawDiamonds,
@@ -267,16 +268,23 @@ check('Stationary gate apples keep their facing; walking apples turn only toward
     patrol.updateEnemies(0);
     assert.equal(walker.direction, -1);
 });
-check('Keyboard intro waits for movement on stage one, then leaves after three seconds without slow motion', () => {
+check('Keyboard intro stays above DEX until camera scroll, then fades without slow motion', () => {
     const {g: intro, element: node, snapshot: state} = createGame();
     intro.setTutorialEnabled(true, false); intro.startLevel(0);
     intro.updateKeyboardSketch(10); intro.drawKeyboardSketch();
     assert.equal(node('playKeyboardMap').hidden, false);
     assert.equal(intro.hint, null);
+    assert.ok(parseFloat(node('playKeyboardMap').style.top)>50);
+    assert.ok(parseFloat(node('playKeyboardMap').style.left)<20);
     intro.handleKeyDown({key:'ArrowUp',repeat:false,preventDefault:noop});
-    intro.updateKeyboardSketch(2.9); intro.drawKeyboardSketch();
+    intro.updateKeyboardSketch(5); intro.drawKeyboardSketch();
     assert.equal(node('playKeyboardMap').hidden, false);
-    intro.updateKeyboardSketch(0.2); intro.drawKeyboardSketch();
+    assert.equal(node('playKeyboardMap').style.opacity,'1');
+    intro.camera=1;
+    intro.updateKeyboardSketch(0.4); intro.drawKeyboardSketch();
+    assert.equal(Number(node('playKeyboardMap').style.opacity),0.5);
+    assert.equal(node('playKeyboardMap').hidden,false);
+    intro.updateKeyboardSketch(0.5); intro.drawKeyboardSketch();
     assert.equal(node('playKeyboardMap').hidden, true);
     intro.startLevel(1); intro.drawKeyboardSketch();
     assert.equal(node('playKeyboardMap').hidden, true);
@@ -409,7 +417,7 @@ check('Rendering fallback, HUD, pulse, active hint and action effects does not t
     assert.equal(element('hintPanel').hidden, true);
 });
 
-check('Tutorial slow motion scales world time and expires on real time; Enter dismisses', () => {
+check('Tutorial counts down automatically and smoothly restores world speed without Enter', () => {
     g.startLevel(0);g.setTutorialEnabled(true,false);
     g.player.x=34;
     g.update(0);
@@ -418,7 +426,17 @@ check('Tutorial slow motion scales world time and expires on real time; Enter di
     for(let i=0;i<60;i++)g.update(1/60);
     assert.ok(Math.abs(before-snapshot().remainingTimeSeconds-0.06)<1e-6);
     assert.ok(Math.abs(g.hint.remaining-11)<1e-6);
-    key('Enter');assert.equal(g.hint,null);
+    key('Enter');assert.ok(g.hint);
+    g.render();
+    assert.ok(Math.abs(element('hintTimer').value-11)<1e-6);
+    assert.equal(element('hintTimer').max,12);
+    g.hint.remaining=1;
+    const ramp=snapshot().remainingTimeSeconds;
+    g.update(1/60);
+    assert.ok(Math.abs((ramp-snapshot().remainingTimeSeconds)*60-0.53)<1e-6);
+    for(let i=0;i<61;i++)g.update(1/60);
+    assert.equal(g.hint,null);
+    g.render();assert.equal(element('hintPanel').hidden,true);
     g.setTutorialEnabled(false,false);
     const normal=snapshot().remainingTimeSeconds;
     for(let i=0;i<60;i++)g.update(1/60);

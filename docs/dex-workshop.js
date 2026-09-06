@@ -25,9 +25,16 @@
     Promise.all(Object.entries(files).map(([name,file])=>new Promise((resolve,reject)=>{
         const image=new Image();images[name]=image;image.onload=resolve;image.onerror=()=>reject(new Error(file));image.src='../assets/'+file;
     }))).then(()=>{
-        for(const name of ['idle','eat','devour'])cut(name,images[name],g=>g.rect(0,0,1000,770));
-        cut('leftLeg',images.idle,g=>g.rect(0,765,500,235));
-        cut('rightLeg',images.idle,g=>g.rect(500,765,500,235));
+        // Kroppens underkant følger maven i stedet for at gennemskære skoenes
+        // kraver vandret. Benudklippet starter oppe under kroppen, så hele
+        // anklen følger med, når benet roterer omkring hoften.
+        for(const name of ['idle','eat','devour'])cut(name,images[name],g=>{
+            g.moveTo(0,0);g.lineTo(1000,0);g.lineTo(1000,600);g.lineTo(810,600);
+            g.bezierCurveTo(810,730,650,795,450,755);
+            g.bezierCurveTo(300,735,220,680,200,600);g.lineTo(0,600);g.closePath();
+        });
+        cut('leftLeg',images.idle,g=>g.rect(0,700,500,300));
+        cut('rightLeg',images.idle,g=>g.rect(500,700,500,300));
         // Følg den monterede pumpes kontur i originalen, ikke hele DEX-billedet.
         cut('pump',images.pump,g=>{
             g.moveTo(291,598);g.bezierCurveTo(329,580,382,609,384,642);
@@ -80,7 +87,7 @@
         },anchors);
         if(layers.backArm){g.save();g.translate(-apart,0);arm(g,'backArm',p,false,anchors);g.restore();}
         if(layers.legs)for(const [name,xpos,sign]of[['leftLeg',-20,-1],['rightLeg',21,1]]){
-            g.save();g.translate(xpos, -23+apart);g.rotate(sign*p.stride);g.drawImage(cuts[name],-50-xpos,-77,100,100);g.restore();}
+            g.save();g.translate(xpos, -30+apart);g.rotate(sign*p.stride);g.drawImage(cuts[name],-50-xpos,-70,100,100);g.restore();}
         if(layers.body){g.save();g.translate(0,-apart);g.drawImage(cuts[p.bodyImage],-50,-100,100,100);g.restore();}
         if(layers.equipment&&settings.equipment==='pump')attachment(g,'pump',0,0,()=>{
             g.save();g.translate(apart,0);g.strokeStyle='#30285d';g.lineWidth=4.4;g.beginPath();g.moveTo(-26,-30);g.quadraticCurveTo(1,-16,21,-23);g.stroke();g.drawImage(cuts.pump,-50,-100,100,100);g.restore();

@@ -21,6 +21,8 @@
     const soundToggle = document.getElementById('soundToggle');
     const gameHint = document.getElementById('gameHint');
     const hintPanel = document.getElementById('hintPanel');
+    const hintTimer = document.getElementById('hintTimer');
+    const hintTimerLabel = document.getElementById('hintTimerLabel');
 
     // 200 logiske højdepixels bevarer banernes fysik. Den bredere 16:9-visning
     // viser mere af banen uden at strække figurer eller ændre springlængder.
@@ -237,7 +239,6 @@
     const SOUND_STORAGE_KEY = 'dextro-dash-2000-effects';
     const TUTORIAL_STORAGE_KEY = 'dextro-dash-2000-tutorial';
     const tutorialToggle = document.getElementById('tutorialToggle');
-    const continueHint = document.getElementById('continueHint');
     let tutorialEnabled = true;
     const discoveredTutorials = new Set();
     const playKeyboardMap = document.getElementById('playKeyboardMap');
@@ -249,14 +250,6 @@
     let keyboardActionSeconds = 0;
     let keyboardActionPickups = 0;
 
-    function noteKeyboardMovement(key) {
-        if (keyboardIntroWaiting && gameState === 'playing' && !demoMode
-            && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown', ' '].includes(key)) {
-            keyboardIntroWaiting = false;
-            keyboardIntroSeconds = 3;
-        }
-    }
-
     function remindActionKeys() {
         if (!tutorialEnabled || demoMode || keyboardActionPickups >= 3) return;
         keyboardActionPickups += 1;
@@ -265,6 +258,12 @@
 
     function updateKeyboardSketch(deltaSeconds) {
         if (gameState !== 'playing' || demoMode || !tutorialEnabled) return;
+        // Først når kameraet forlader banestarten, fader introen væk.
+        // Et hop eller en piletast ved venstre kant er ikke nok i sig selv.
+        if (keyboardIntroWaiting && cameraX > 0) {
+            keyboardIntroWaiting = false;
+            keyboardIntroSeconds = 0.8;
+        }
         // Fasthold skitsen under læsetips, så slowmotion-panelet ikke bruger
         // hele visningstiden. Tællerne bruger ellers uændret realtid.
         if (activeHint) return;
@@ -278,6 +277,15 @@
             && (intro || keyboardActionSeconds > 0);
         playKeyboardMap.hidden = !visible;
         playKeyboardMap.classList.toggle('actions-only', !intro);
+        playKeyboardMap.classList.toggle('over-dex', intro);
+        playKeyboardMap.style.left = intro
+            ? `${clamp((player.x + PLAYER_WIDTH / 2 - cameraX) / SCREEN_WIDTH * 100, 10, 88)}%`
+            : '59%';
+        playKeyboardMap.style.top = intro
+            ? `${(player.y + HUD_HEIGHT - 6) / SCREEN_HEIGHT * 100}%`
+            : '1.8%';
+        playKeyboardMap.style.opacity = intro && !keyboardIntroWaiting
+            ? String(clamp(keyboardIntroSeconds / 0.8, 0, 1)) : '1';
         playKeyboardMap.setAttribute('aria-label', intro
             ? 'Keyboard controls: A, Z and arrow keys' : 'Action keys: A and Z');
     }
@@ -926,7 +934,7 @@
     function setMessage(text, duration) {
         if (text.startsWith('HINT:')) {
             if (!tutorialEnabled || demoMode) return;
-            const hint = { text: text.replace(/^HINT:\s*/, ''), remaining: Math.max(12, duration) };
+            const hint = { text: text.replace(/^HINT:\s*/, ''), remaining: Math.max(12, duration), duration: Math.max(12, duration) };
             if (!activeHint) activeHint = hint;
             else hintQueue.push(hint);
             return;
@@ -1177,7 +1185,6 @@
             keys.left = key === 'arrowleft';
             keys.right = key === 'arrowright';
             if (key === 'arrowup' || key === ' ') jump();
-            noteKeyboardMovement(key);
             return;
         }
 
@@ -1213,15 +1220,10 @@
             // Pil op starter banen med et hop. Venstre og højre er allerede sat
             // i keys ovenfor, så figuren løber straks i den valgte retning.
             if (key === 'arrowup') jump();
-            noteKeyboardMovement(key);
             return;
         }
 
-        noteKeyboardMovement(key);
         if (event.repeat) return;
-        if (key === 'enter' && activeHint) {
-            event.preventDefault(); activeHint = hintQueue.shift() || null; return;
-        }
         if (key === 'm') {
             toggleMusic();
             return;
@@ -1268,7 +1270,6 @@
         canvas.focus();
     });
     tutorialToggle.addEventListener('click', () => { setTutorialEnabled(!tutorialEnabled); canvas.focus(); });
-    continueHint.addEventListener('click', () => { activeHint = hintQueue.shift() || null; canvas.focus(); });
 
     function update(deltaSeconds) {
         if (gameState === 'title') {
@@ -1296,8 +1297,12 @@
         // Tipsets læsetid følger væguret. Hele spilverdenen, inklusive BG,
         // projektiler, faldende gulve og tidsbonus, bruger samme slowmotion.
         const tutorialSlow = tutorialEnabled && !demoMode && activeHint;
+        // De sidste to sekunder øger hastigheden blødt fra 6% til normal.
+        // Alle spilure deler faktoren; tipsets nedtælling bruger fortsat væguret.
+        const resumeProgress = tutorialSlow ? clamp(1 - activeHint.remaining / 2, 0, 1) : 1;
+        const tutorialSpeed = 0.06 + 0.94 * resumeProgress * resumeProgress * (3 - 2 * resumeProgress);
         updateHints(deltaSeconds);
-        if (tutorialSlow) deltaSeconds *= 0.06;
+        if (tutorialSlow) deltaSeconds *= tutorialSpeed;
         elapsedRealSeconds += deltaSeconds;
         remainingTimeSeconds = Math.max(0, remainingTimeSeconds - deltaSeconds);
         if (remainingTimeSeconds <= 0) {
@@ -3826,7 +3831,13 @@
         if (gameHint.textContent !== hintText) gameHint.textContent = hintText;
         gameHint.hidden = !hintText;
         hintPanel.hidden = !hintText;
-        continueHint.hidden = !hintText;
+        if (hintText) {
+            hintTimer.max = activeHint.duration;
+            hintTimer.value = Math.max(0, activeHint.remaining);
+            hintTimerLabel.textContent = activeHint.remaining > 2
+                ? `RESUMING IN ${Math.ceil(activeHint.remaining - 2)}s`
+                : 'RETURNING TO FULL SPEED';
+        }
         if (gameState !== 'playing') return;
         context.save();
         if (messageTime > 0) {

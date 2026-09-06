@@ -149,7 +149,6 @@ function buildDextroStage(index, seed = 2000 + index) {
             level.blocks.push({x:start+80,y:110,width:18,height:16,reward:'diamonds'});
             level.blocks.push({x:start+125,y:97,width:18,height:16,reward:'candy'});
             platform(start+218,130,70); monster(type,start+280,154,{minX:start+275,maxX:start+310});
-            cue(start-25,'crate','Jump into a cache from below to knock out its contents.');
         }
         // One reserve pickup per later encounter, never placed in a mandatory
         // low tunnel. No adaptive dosing amounts or controller suggestions.

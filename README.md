@@ -101,6 +101,8 @@ There is no framework, package installation or compilation step. The project is 
 
 Open the [DEX Workshop](docs/dex-workshop.html) to prototype modular character animation: pause or step frames, switch direction, toggle body parts and equipment, inspect attachment points, adjust offsets and export visual rig settings. It reuses current DEX artwork with code-drawn arm and tail sketches. The face is still part of the body images; this separate art tool does not change gameplay or run physiology.
 
+Open the separate [DEX 3D Character Lab](docs/dex-3d.html) for the first articulated 3D concept: rotate the model, scrub idle/run/jump/eat animations, change skins and surface finishes, and preview removable equipment. Local texture files stay on the device. This is a procedural art prototype, not a finished sculpt, a production skinned rig or a change to the live game. Its local Three.js dependency retains the [MIT licence](docs/vendor/THREE-LICENSE).
+
 Open [the level workshop](docs/level-overview.html) for zoomable maps of all ten actual stages, food patrols, solid ceilings, caches, crumbling floors and diamond-risk clusters. It runs locally, including directly from a file. Height is exaggerated in the overview for readability; the game currently scrolls horizontally only.
 
 Generate a reproducible, **unpublished draft** and load its JSON through the workshop's file input:
