@@ -5,6 +5,10 @@ global.THREE=require('../docs/vendor/three.min.js');
 global.document={createElement:()=>({width:0,height:0,getContext:()=>({fillRect(){},beginPath(){},ellipse(){},fill(){}})})};
 const rig=require('../docs/dex-3d-model.js'),dex=rig.create();
 let frames=0;
+const shoe=dex.legs[0].foot.children.find(part=>part.material?.color?.getHex()===0x08787d);
+assert.ok(shoe);
+dex.update(0,{superShoes:true});assert.equal(shoe.material.color.getHex(),0xffb522);
+dex.update(0,{superShoes:false});assert.equal(shoe.material.color.getHex(),0x08787d);
 for(const motion of ['idle','run','jump','eat','inspect','curious','pant'])for(const expression of ['happy','sleepy','grumpy'])for(let frame=0;frame<60;frame++){
     const p=dex.update(frame/60,{motion,expression,gear:'backpack',stock:frame%4});
     for(const n of Object.values(p))assert.ok(Number.isFinite(n));
@@ -34,8 +38,19 @@ for(let a=0;a<=80;a++){
 assert.equal(dex.teeth.filter(t=>t.upper).length,4);
 assert.equal(dex.teeth.filter(t=>!t.upper).length,4);
 assert.equal(dex.teeth.filter(t=>t.kind==='incisor').length,4);
+// Det glade ansigt løfter begge mundvige, uden at ændre spiseåbningen.
+dex.update(0,{motion:'idle',expression:'grumpy',autoMouth:false,mouth:.36});
+const neutralCorner=dex.faceGeometry.attributes.position.getY(0);
+dex.update(0,{motion:'idle',expression:'happy',autoMouth:false,mouth:.36});
+assert.ok(dex.faceGeometry.attributes.position.getY(0)>neutralCorner+.12);
+assert.ok(Math.abs(dex.faceGeometry.attributes.position.getY(0)-dex.faceGeometry.attributes.position.getY(40))<1e-6);
+assert.ok(dex.teeth.filter(t=>t.kind==='fang').every(t=>t.mesh.geometry.type==='LatheGeometry'));
+dex.update(.4,{motion:'eat',expression:'happy'});
+const happyBite=Array.from(dex.faceGeometry.attributes.position.array);
+dex.update(.4,{motion:'eat',expression:'grumpy'});
+assert.deepEqual(Array.from(dex.faceGeometry.attributes.position.array),happyBite);
 for(const opening of [.05,.25,.5,1]){
-    dex.update(0,{autoMouth:false,mouth:opening});
+    dex.update(0,{autoMouth:false,mouth:opening,expression:'grumpy'});
     const rx=.67+opening*.08,ry=.025+opening*.495;
     for(const tooth of dex.teeth){
         const y=-.31+(tooth.upper?1:-1)*ry*Math.sqrt(1-(tooth.x/rx)**2);
@@ -59,6 +74,17 @@ for(const fps of [30,60,144]){
     assert.ok(state.effort<1e-10);assert.ok(Math.abs(state.idleSeconds-18)<1e-8);
 }
 assert.equal(dex.update(0,{motion:'idle',idleSeconds:3}).inspect,0);
+// Spillets pulsstyrede tilstand erstatter værkstedets tidsbaserede indsats.
+assert.equal(rig.breathingEffort(60),0);assert.equal(rig.breathingEffort(130),.7);
+assert.equal(rig.breathingEffort(160),1);assert.equal(rig.breathingEffort(NaN),0);
+const recoveryBreath=rig.activityState();
+rig.advanceActivity(recoveryBreath,'idle',1/60,rig.breathingEffort(130));
+assert.equal(recoveryBreath.effort,.7,'standing still with high pulse continues panting');
+const beforePhase=recoveryBreath.breathPhase;
+rig.advanceActivity(recoveryBreath,'idle',1/60,rig.breathingEffort(100));
+assert.equal(recoveryBreath.effort,.4);assert(recoveryBreath.breathPhase>beforePhase);
+rig.advanceActivity(recoveryBreath,'run',1/60,0);
+assert.equal(recoveryBreath.effort,0,'running animation cannot invent physiological pulse');
 const breathingState=rig.activityState();breathingState.clock=1000;breathingState.effort=.7;breathingState.breathPhase=.2;
 rig.advanceActivity(breathingState,'idle',1/60);
 assert.ok(breathingState.breathPhase>.2&&breathingState.breathPhase<.23,'breath advances smoothly even after a long session');

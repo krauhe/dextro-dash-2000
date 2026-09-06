@@ -33,3 +33,17 @@ the final RGBA cutout on a dark background before using it in the game.
 `campaign.js` is the active ten-stage data source for the game, generator and
 level workshop. The old `level-01.js` and `level-02.js` are not loaded by the app.
 Do not edit those old definitions when changing the active campaign.
+
+## Queued requests and open decisions
+
+Read `docs/WORK-QUEUE.md` when continuing work in this project. Keep referenced
+requests and unanswered questions there with their response ID, bounded scope,
+approval evidence and status. A newer independent message does not cancel an
+unfinished request. An explicit replacement or cancellation does.
+
+When the user answers an older ID (for example, "#28 yes"), resolve that item,
+acknowledge the approved scope and resume it without asking the same question
+again. Work on independent approved items while another item awaits input. Do
+not infer approval from silence. Before ending a turn, update what is complete,
+still in progress or awaiting an answer. This is a working record, not an app
+queue modification or permission to run background tasks, commit or publish.

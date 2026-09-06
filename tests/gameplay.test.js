@@ -17,6 +17,7 @@ function createGame() {
     const context = new Proxy({
         measureText: text => ({ width: text.length * 3.3 }),
         createLinearGradient: () => ({ addColorStop: noop }),
+        createRadialGradient: () => ({ addColorStop: noop }),
         fillRect(...args) { calls.push({ type: 'rect', color: this.fillStyle, args }); },
         fillText(...args) { calls.push({ type: 'text', args }); },
     }, { get: (target, key) => key in target ? target[key] : noop });
@@ -49,18 +50,21 @@ function createGame() {
     };
     sandbox.window = sandbox; sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
-    for (const file of ['engine/hovorka.js', 'engine/physiology-engine.js', 'campaign.js', 'game.js']) {
+    for (const file of ['engine/hovorka.js', 'engine/physiology-engine.js', 'dex-activity.js', 'glucose-particles.js', 'dex-game-renderer.js', 'campaign.js', 'game.js']) {
         let source = fs.readFileSync(path.join(root, file), 'utf8');
         if (file === 'game.js') source = source.replace('    window.glucoseRunner = {', `
             window.testGame = {
                 player, keys, startLevel, handleKeyDown, handleKeyUp, loseLife, finishDeath, collectObjects,
                 update, updatePlayer, jump, useCandy, usePumpInsulin, updateAutoPump,
                 updateHints, setMessage, updateBGAlarms, winLevel, updateStageClearTally,
-                getHighBGFatigue, drawLevel, drawMessage, render, updatePizzaThrowState,
+                getHighBGFatigue, drawLevel, drawMessage, render, updatePizzaThrowState, updateFizzState,
                 setTutorialEnabled, updateEggState, updateEnemies, updateStageObstacles, hitCacheBlock,
                 updateKeyboardSketch, drawKeyboardSketch, startNextLevel,
                 eatEnemy, getEatingFoodPose, updateParticles,
                 getEggRenderPose,
+                getHUDMealFloatPose,
+                updateBananaDrop,updateBananaPeels,
+                get peels(){return bananaPeels;},
                 startAttractDemo, getDemoStartPositions,
                 set random(value){Math.random=value;}, get demoMode(){return demoMode;},
                 get tail(){return tailSegments;},
@@ -70,6 +74,7 @@ function createGame() {
                 get tutorialEnabled(){return tutorialEnabled;},
                 getPickupAnimationFrame, drawDiamonds,
                 set animationSeconds(value){elapsedRealSeconds=value;},
+                set timer(value){remainingTimeSeconds=value;},
                 get projectiles(){return cheeseProjectiles;},
                 get items(){return items;}, get engine(){return physiologyEngine;},
                 get diamonds(){return diamonds;}, get particles(){return particles;},
@@ -91,15 +96,79 @@ function createGame() {
 }
 
 const {g, snapshot, calls, audioCalls, element} = createGame();
+
+{
+    const enemy={type:'soda',fizzState:'normal',fizzTimer:0,fizzCycleIndex:0};
+    g.updateFizzState(enemy,0,0);assert.equal(enemy.fizzState,'warning');
+    g.updateFizzState(enemy,0,.9);assert.equal(enemy.fizzState,'warning');
+    g.updateFizzState(enemy,0,.11);assert.equal(enemy.fizzState,'shaking');
+    assert.equal(enemy.fizzTimer,2);
+    g.updateFizzState(enemy,0,2);assert.equal(enemy.fizzState,'normal');
+    for(const phase of ['warning','shaking']){
+        g.startLevel(0);const soda=g.enemies[0];
+        Object.assign(soda,{type:'soda',fizzState:phase,fizzTimer:.5,speed:0,
+            x:g.player.x,y:g.player.y+9,minX:g.player.x,maxX:g.player.x});
+        g.player.vy=0;g.updateEnemies(0);
+        assert.equal(g.state,phase==='warning'?'playing':'dying');
+        assert.equal(soda.alive,false);
+    }
+    console.log('PASS Fizzel warns for one edible second before two dangerous seconds');
+}
 let passed = 0;
 function check(name, run) {run(); passed++; console.log(`PASS ${name}`);}
+check('Heart gives one life once; shoes activate boosted movement and reset with a new stage',()=>{
+    g.startLevel(0);const before=snapshot().lives;
+    const heart={type:'heart',x:g.player.x+9,y:g.player.y+10,collected:false};g.items.push(heart);
+    g.collectObjects();assert.equal(snapshot().lives,before+1);
+    g.collectObjects();assert.equal(snapshot().lives,before+1);
+    g.items.push({type:'superShoes',x:g.player.x+9,y:g.player.y+10,collected:false});
+    g.collectObjects();assert.equal(g.player.superShoesActive,true);
+    g.player.onGround=true;g.jump();assert(g.player.vy < -218);
+    g.keys.right=true;g.player.vx=200;g.updatePlayer(1/60);assert(g.player.vx>88);
+    g.startLevel(0);assert.equal(g.player.superShoesActive,false);
+});
 function pick(type) {
+    // Mekaniktestene må stadig prøve udstyrsskift, selv om banerne nu højst
+    // indeholder én pumpe. Pumpetætheden testes separat på rigtige banedata.
+    if(type==='pump'&&!g.items.some(candidate=>candidate.type===type&&!candidate.collected))
+        g.items.push({type,x:g.player.x+8,y:g.player.y+10,collected:false});
     const item = g.items.find(candidate => candidate.type === type && !candidate.collected);
     assert.ok(item, `available ${type}`);
     g.player.x = item.x - 8; g.player.y = item.y - 10; g.collectObjects();
     return item;
 }
 const key = (value, repeat = false) => g.handleKeyDown({key: value, repeat, preventDefault: noop});
+
+check('Real running and jumping drive cardio; rest, walls and game-over do not',()=>{
+    g.startLevel(0);g.setTutorialEnabled(false);
+    g.platforms.splice(0,g.platforms.length,{x:0,y:154,width:10000,height:20});
+    g.blocks.splice(0);g.keys.left=false;g.keys.right=false;
+    g.updatePlayer(1/60);g.stepPhys(1/60);
+    assert.equal(g.engine.activeAktivitet,null,'rest at start');
+    g.keys.right=true;
+    for(let i=0;i<120;i++){g.updatePlayer(1/60);g.stepPhys(1/60);}
+    assert.equal(g.engine.activeAktivitet.intensitet,'Medium');
+    assert.equal(g.engine.activeMotion.length,1);
+    assert(g.engine.getPhysiologySnapshot().exercise.e1>0);
+    g.player.superShoesActive=true;g.updatePlayer(1/60);g.stepPhys(1/60);
+    assert.equal(g.engine.activeAktivitet.intensitet,'Høj');
+    g.keys.right=false;
+    for(let i=0;i<120;i++){g.updatePlayer(1/60);g.stepPhys(1/60);}
+    assert.equal(g.engine.activeAktivitet,null,'standing with shoes is rest');
+    assert(g.engine.getPhysiologySnapshot().exercise.e1>0,'recovery survives stopping');
+    g.jump();g.updatePlayer(1/60);g.stepPhys(1/60);
+    assert.equal(g.engine.activeAktivitet.intensitet,'Høj','jumping is exertion');
+    g.loseLife('TEST',true);assert.equal(g.engine.activeAktivitet,null);
+    const time=g.engine.totalSimMinutes;g.stepPhys(.5);
+    assert.equal(g.engine.totalSimMinutes,time,'no physiology in game-over animation');
+    g.startLevel(0);assert.equal(g.player.superShoesActive,false);
+    g.blocks.splice(0);g.platforms.splice(0,g.platforms.length,
+        {x:0,y:154,width:10000,height:20},{x:51,y:0,width:30,height:154,solid:true});
+    g.keys.right=true;g.keys.left=false;
+    for(let i=0;i<60;i++){g.updatePlayer(1/60);g.stepPhys(1/60);}
+    assert.equal(g.player.x,34);assert.equal(g.engine.activeAktivitet,null,'wall is not movement');
+    g.keys.right=false;
+});
 
 check('Attract demos vary stage and safe interior position; camera/tail follow and player starts remain unchanged', () => {
     const overlaps=(a,b)=>a.x<b.x+b.width && a.x+a.width>b.x && a.y<b.y+b.height && a.y+a.height>b.y;
@@ -120,7 +189,8 @@ check('Attract demos vary stage and safe interior position; camera/tail follow a
     let seed=2000,previousStage=-1;
     const stages=new Set(),positions=new Set();
     g.random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};
-    for(let run=0;run<100;run++){
+    // Every third demo explores a random location; the other two are fixed lessons.
+    for(let run=0;run<300;run++){
         g.startAttractDemo();const state=snapshot();
         assert.ok(g.demoMode);assert.equal(g.state,'playing');
         assert.notEqual(state.stage,previousStage);previousStage=state.stage;
@@ -128,7 +198,7 @@ check('Attract demos vary stage and safe interior position; camera/tail follow a
         assert.ok(Math.abs(state.x-state.cameraX-80)<.001);
         assert.equal(g.player.previousY,g.player.y);
         assert.ok(Math.abs(g.tail[0].x-state.x)<20,'tail reset after relocating');
-        assert.ok(Math.abs(state.bg-6)<.01);assert.equal(state.cob,0);
+        assert.ok([4.4,6,11].some(bg=>Math.abs(state.bg-bg)<.01));assert.equal(state.cob,0);
         stages.add(state.stage);positions.add(`${state.stage}:${state.x}`);
     }
     assert.equal(stages.size,10);assert.ok(positions.size>40);
@@ -268,7 +338,12 @@ check('A real low-BG death retains its reason and needs a fresh press', () => {
     key('ArrowRight'); assert.equal(snapshot().lives, 2);
 });
 check('A lower-tier pump preserves the automatic pump and two stored doses', () => {
-    g.startLevel(8); pick('autoPump'); pick('insulin'); pick('insulin'); pick('pump');
+    g.startLevel(8); pick('autoPump'); pick('insulin'); pick('insulin');
+    const beforeScore=snapshot().score, beforeSounds=audioCalls.length;
+    const manual=pick('pump');
+    assert.equal(manual.collected,false);
+    assert.equal(snapshot().score,beforeScore);
+    assert.equal(audioCalls.length,beforeSounds);
     assert.equal(snapshot().autoPumpActive, true); assert.equal(snapshot().pumpInsulinStored, 2);
 });
 check('Manual to automatic upgrade preserves inventory', () => {
@@ -294,18 +369,20 @@ check('A full pump also uses an extra pen at low BG, as explicitly designed', ()
     g.physiology = {trueBG: 3.5}; const before = g.engine.activeFastInsulin.length;
     pick('insulin'); assert.equal(g.engine.activeFastInsulin.length, before + 1);
 });
-check('First-use hints last 8 visible seconds, queue, and ignore pickup labels', () => {
+check('First-use hints last 4 visible seconds, queue, and ignore pickup labels', () => {
     g.startLevel(8); g.setTutorialEnabled(true, false); pick('candy'); const text = g.hint.text; pick('insulin');
-    assert.equal(g.hint.text, text); assert.equal(g.hint.remaining, 8);
+    assert.equal(g.hint.text, text); assert.equal(g.hint.remaining, 4);
     pick('pump'); assert.equal(g.hints.length, 1);
-    g.updateHints(7); assert.equal(g.hint.text, text);
+    g.updateHints(3); assert.equal(g.hint.text, text);
     g.updateHints(1); assert.match(g.hint.text, /MANUAL PUMP/);
-    assert.equal(g.hint.remaining, 8);
+    assert.equal(g.hint.remaining, 4);
 });
 check('Opening movement and ordinary food encounters leave players free to discover', () => {
     const {g: opening} = createGame();
     opening.setTutorialEnabled(true, false);
     opening.startLevel(0);
+    // This case isolates movement/food hints, not collectible action tutorials.
+    opening.items.length = 0;
     opening.update(0);
     assert.equal(opening.hint, null);
     opening.player.x = 180;
@@ -499,12 +576,12 @@ check('Tutorial counts down automatically and smoothly restores world speed with
     const before=snapshot().remainingTimeSeconds;
     for(let i=0;i<60;i++)g.update(1/60);
     assert.ok(Math.abs(before-snapshot().remainingTimeSeconds-0.06)<1e-6);
-    assert.ok(Math.abs(g.hint.remaining-7)<1e-6);
+    assert.ok(Math.abs(g.hint.remaining-3)<1e-6);
     key('Enter');assert.ok(g.hint);
     g.render();
-    assert.ok(Math.abs(element('hintTimer').value-7)<1e-6);
-    assert.equal(element('hintTimer').max,8);
-    g.hint.remaining=2/3;
+    assert.ok(Math.abs(element('hintTimer').value-3)<1e-6);
+    assert.equal(element('hintTimer').max,4);
+    g.hint.remaining=1/3;
     const ramp=snapshot().remainingTimeSeconds;
     g.update(1/60);
     assert.ok(Math.abs((ramp-snapshot().remainingTimeSeconds)*60-0.53)<1e-6);
@@ -534,25 +611,29 @@ check('Solid tunnel ceiling stops upward movement and vertical sides stop horizo
     assert.ok(g.player.x+16<=roof.x+0.1);g.keys.right=false;
 });
 check('A real upward collision empties a cache once and cancels the ascent', () => {
-    g.startLevel(0);const block=g.blocks.find(b=>b.reward==='diamonds');
+    // Kassen vælges efter slaghøjde, ikke dens lodtrukne indhold. Den første
+    // diamantkasse er nu en høj bonuskasse, som ikke kan slås fra jorden.
+    g.startLevel(0);const block=g.blocks.find(b=>b.y>=105);
     g.player.x=block.x+2;g.player.y=131;g.player.onGround=true;g.jump();
     for(let i=0;i<20&&!block.used;i++)g.updatePlayer(1/120);
     assert.equal(block.used,true);assert.equal(g.player.vy,0);
     const count=g.particles.length;g.hitCacheBlock(block);assert.equal(g.particles.length,count);
 });
-check('Crumble floors warn, disappear, reform safely, and reset on restart', () => {
+check('Crumble floors warn, disappear permanently, and reset only on restart', () => {
     g.startLevel(4);const floor=g.platforms.find(p=>p.crumble);
     g.player.x=floor.x+4;g.player.y=130;g.player.vy=30;
     g.updatePlayer(1/30);assert.equal(floor.crumbleTime,1.1);
     g.updateStageObstacles(1);assert.equal(floor.collapsed,false);
     g.updateStageObstacles(0.11);assert.equal(floor.collapsed,true);
     g.player.y=154;g.updateStageObstacles(6);assert.equal(floor.collapsed,true);
-    g.player.x=34;g.updateStageObstacles(0.1);assert.equal(floor.collapsed,false);
+    g.player.x=34;g.updateStageObstacles(600);assert.equal(floor.collapsed,true);
     g.startLevel(4);assert.equal(g.platforms.find(p=>p.crumble).crumbleTime,null);
 });
 check('Mystery caches animate a question mark, release one stage monster, and reset', () => {
     for(let stage=0;stage<10;stage++) {
         g.startLevel(stage);
+        const rewards=[...new Set(g.blocks.map(b=>b.reward))];
+        g.random=()=>(rewards.indexOf('monster')+.1)/rewards.length;
         const block=g.blocks.find(b=>b.reward==='monster');assert.ok(block,`stage ${stage+1}`);
         g.camera=block.x-90;g.animationSeconds=0;calls.length=0;g.drawLevel();
         assert.ok(calls.some(c=>c.type==='text'&&c.args[0]==='?'));
@@ -575,6 +656,70 @@ check('Mystery caches animate a question mark, release one stage monster, and re
         g.startLevel(stage);assert.ok(g.blocks.every(b=>!b.used));
         assert.equal(g.enemies.length,count);
     }
+    g.random=Math.random;
+});
+check('Final ten seconds beep once per displayed second and stop outside play',()=>{
+    const {g:timerGame,audioCalls:tones}=createGame();
+    timerGame.startLevel(0);timerGame.setTutorialEnabled(false);
+    timerGame.timer=11.02;timerGame.update(.01);
+    assert.equal(tones.filter(c=>c.name==='countdownBeep').length,0);
+    for(let second=10;second>=1;second--){
+        timerGame.timer=second+.005;timerGame.update(.01);timerGame.update(.01);
+    }
+    assert.equal(tones.filter(c=>c.name==='countdownBeep').length,10);
+    timerGame.state='life-lost';timerGame.timer=5.005;timerGame.update(.01);
+    assert.equal(tones.filter(c=>c.name==='countdownBeep').length,10);
+});
+check('Banana patrol turns and peel gives warning, jump clearance, slip and reset',()=>{
+    g.startLevel(2);g.setTutorialEnabled(false);
+    const banana=g.enemies.find(e=>e.type==='banana');assert(banana);
+    assert.ok(banana.speed>0,'stage 3 banana patrol is enabled without test overrides');
+    assert.ok(banana.maxX-banana.minX>banana.width+10,'patrol includes room for the entire body');
+    const floor=g.platforms.find(p=>p.y===154&&p.width>=200);
+    Object.assign(banana,{x:floor.x+80,y:132,speed:20,direction:1,
+        minX:floor.x+30,maxX:floor.x+150,peelTimer:0});
+    g.player.x=banana.x-60;g.player.y=132;
+    g.updateBananaDrop(banana,.01);assert.equal(g.peels.length,0);
+    assert(banana.peelThrow,'visible pull animation precedes release');
+    g.updateBananaDrop(banana,.6);assert.equal(g.peels.length,0);
+    g.updateBananaDrop(banana,.26);assert.equal(g.peels.length,1);
+    g.updateBananaDrop(banana,.4);assert.equal(g.peels.length,1,'one peel per throw');
+    assert.equal(banana.peelThrow,null,'patrol resumes');
+    const peel=g.peels[0];assert.equal(peel.y,154);
+    g.player.x=peel.x-8;g.player.invulnerableTime=0;
+    g.updateBananaPeels(.2);assert.equal(g.state,'playing','landing grace');
+    g.player.y=100;g.updateBananaPeels(.7);assert.equal(g.state,'playing','jump clears peel');
+    g.player.y=132;g.updateBananaPeels(.01);assert.equal(g.state,'dying');
+    g.startLevel(2);assert.equal(g.peels.length,0);
+    const walker=g.enemies.find(e=>e.type==='banana');
+    walker.speed=20;walker.direction=1;walker.x=walker.maxX-walker.width;
+    g.player.x=0;g.updateEnemies(.01);assert.equal(walker.direction,-1);
+});
+check('Food miniatures drift within the liquid at changing COB levels',()=>{
+    for(const cob of [0,1,5,18,40,80])for(let age=0;age<20;age+=.2){
+        const pose=g.getHUDMealFloatPose(age,1,cob);
+        const radius=pose.size*(Math.cos(pose.rotation)+Math.abs(Math.sin(pose.rotation)))/2;
+        const top=Math.max(8,21.2-Math.max(.04,Math.min(14,cob/40*14)));
+        assert(pose.y-radius>=top-1e-9&&pose.y+radius<=21.2+1e-9);
+        assert(pose.x-radius>=6&&pose.x+radius<=30);
+    }
+    assert.notEqual(g.getHUDMealFloatPose(1,0,30).x,g.getHUDMealFloatPose(2,0,30).x);
+    for(const cob of [5,18,40]){
+        const oldSize=Math.min(8,Math.min(13.2,cob/40*14)*.62);
+        assert.ok(g.getHUDMealFloatPose(1,0,cob).size>oldSize*1.25,'food is visibly larger');
+    }
+});
+check('The same first cache can yield different contents on fresh attempts',()=>{
+    const outcomes=new Set();
+    for(const draw of [.01,.4,.8,.99]){
+        g.startLevel(0);g.random=()=>draw;
+        const block=g.blocks[0];g.hitCacheBlock(block);outcomes.add(block.reward);
+        const reward=block.reward;g.random=()=>.5;g.hitCacheBlock(block);
+        assert.equal(block.reward,reward,'used blocks cannot reroll');
+        assert(!['pump','autoPump'].includes(reward),'early-stage gear stays restricted');
+    }
+    g.random=Math.random;
+    assert(outcomes.size>=2);
 });
 check('Egg folds its feet, rolls off its perch, lands below and rolling contact loses a life', () => {
     g.startLevel(1);const egg=g.enemies.find(e=>e.eggDrop);
@@ -658,12 +803,12 @@ check('Real alarm methods use distinct motifs and obey the effects toggle indepe
     vm.runInContext(fs.readFileSync(path.join(root,'audio.js'),'utf8')+'\nthis.AudioClass=GlucoseRunnerAudio;',scope);
     const audio = new scope.AudioClass(); const notes=[];
     audio.tone=(...args)=>notes.push(args); audio.musicEnabled=false;
-    audio.lowBGAlarm(); assert.deepEqual(notes.map(n=>n[0]),[79,76,72]);
+    audio.lowBGAlarm(); assert.deepEqual(notes.map(n=>n[0]),[79]);
     notes.length=0; audio.highBGAlarm(); assert.deepEqual(notes.map(n=>n[0]),[55,60]);
     audio.effectsBus={gain:{value:0.9}};audio.setEffectsEnabled(false);
     assert.equal(audio.effectsBus.gain.value,0);notes.length=0;
     audio.lowBGAlarm();audio.highBGAlarm();assert.equal(notes.length,0);
-    audio.setEffectsEnabled(true);audio.lowBGAlarm();assert.equal(notes.length,3);
+    audio.setEffectsEnabled(true);audio.lowBGAlarm();assert.equal(notes.length,1);
     assert.equal(audio.musicEnabled,false);
 });
 

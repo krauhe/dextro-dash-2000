@@ -1,14 +1,21 @@
-# Updates
+# Release notes
 
-## 2026-09-06
+## 0.1.4 — 2026-09-06
 
-1. Ten-stage prototype campaign with a gentler orchard opening, new food characters, themed scenery and darker music in later stages.
-2. Added rolling eggs, collapsing floors, head-hit caches and reward routes involving food, insulin and monster bounces.
-3. Larger optional in-game tips and a reusable keyboard reminder. Movement and ordinary food effects are left for players to discover.
-4. Fixed stationary monsters rapidly flipping direction at patrol boundaries.
-5. DEX now uses an articulated 3D character in the game, with equipment, flexible movement and animated eating. The character workshops remain available for experiments.
-6. Egg Man tucks his feet and rolls around his shell, with corrected platform collisions. Race finish banners replace the goal huts.
-7. Attract-mode demos start at varied safe locations. Mystery caches can release monsters, and tutorial slow motion resumes automatically.
-8. Added a separate glucose workshop showing food absorption, true BG and delayed insulin action through a blue valve. It does not change the game's physiology.
+### Features
 
-The campaign still needs a complete human balance playthrough. The glucose workshop is a visual prototype, not treatment guidance.
+- Bottom glucose display with animated reservoirs, particles and insulin feedback.
+- Running activity connected to DEX's physiology, with breathing and glucose dust feedback.
+- Longer opening stage, richer scenery, more food and rare extra-life pickups.
+- Visible super shoes, improved DEX expressions and synchronized low-glucose light/sound.
+- Food and insulin demos, pickup/particle gallery and food-monster gallery.
+
+### Key fixes
+
+- Fizzler now gives an edible warning before dangerous shaking.
+- Crumbled floors stay gone until restart; lava gaps show animated fire.
+- Pumps are rare; automatic-pump artwork has a clean transparent background.
+- Improved clearance around pickups and banana-peel hazards.
+- Running dust and valve particles share one visual rate scale; displayed-zero IOB stops insulin drops and closes the valve without altering physiology.
+
+This is a prototype checkpoint. Full campaign balance has not been verified.

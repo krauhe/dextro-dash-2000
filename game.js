@@ -13,6 +13,7 @@
     const context = canvas.getContext('2d');
     // 2D-sprites bruges kun som fallback på enheder uden tilgængelig WebGL.
     const dexRenderer = window.DexGameRenderer ? window.DexGameRenderer.create() : null;
+    const muscleDust = window.DexGlucoseParticles.createDust();
     const overlay = document.getElementById('gameOverlay');
     const overlayTitle = document.getElementById('overlayTitle');
     const overlaySubtitle = document.getElementById('overlaySubtitle');
@@ -32,10 +33,21 @@
     const SCREEN_HEIGHT = 200;
     const RENDER_SCALE = 1080 / SCREEN_HEIGHT;
     const HUD_HEIGHT = 32;
+    const HUD_TOP = SCREEN_HEIGHT - HUD_HEIGHT;
+    const bgHUDRenderer = window.DexBGHUD ? window.DexBGHUD.create() : null;
+    // Hele glasmodulet centreret som én enhed; samme offset bruges af pickups.
+    const BG_HUD_X = (SCREEN_WIDTH - 190) / 2;
+    const CANDY_HUD_X = BG_HUD_X - 158;
+    const PUMP_HUD_X = BG_HUD_X + 69;
+    // Små måltidsbilleder er visuel feedback, ikke separate fysiologiske puljer.
+    const hudMeals = [];
+    let bgHUDSignals = {cob:0,food:0,out:0,action:1,insulinClearance:0};
+    let baselineBGAction = 1;
+    let baselineDisposalAction = 0;
     const FIXED_STEP_SECONDS = 1 / 60;
     const SIMULATION_MINUTES_PER_REAL_SECOND = 4;
     const LEVEL_TIME_SECONDS = 120;
-    const HINT_TIME_SCALE = 2 / 3;
+    const HINT_TIME_SCALE = 1 / 3;
     const HINT_RESUME_SECONDS = 2 * HINT_TIME_SCALE;
     const POINTS_PER_REMAINING_SECOND = 50;
     const POINTS_PER_DIAMOND = 100;
@@ -81,6 +93,7 @@
     const TAIL_MOTION_DAMPING = 0.80;
     const TAIL_DIRECTIONAL_STIFFNESS = 0.032;
     const FIZZ_SHAKE_SECONDS = 2;
+    const FIZZ_WARNING_SECONDS = 1;
     const FIZZ_FIRST_DELAY_SECONDS = 2.8;
     const FIZZ_MIN_COOLDOWN_SECONDS = 4;
     const FIZZ_COOLDOWN_VARIATION_SECONDS = 3;
@@ -192,7 +205,7 @@
     context.imageSmoothingEnabled = true;
 
     const backgroundImage = new Image();
-    backgroundImage.src = 'assets/retro-landscape.png';
+    backgroundImage.src = 'assets/retro-landscape-hd.png';
     const biomeImages = {};
     for (const [key, theme] of Object.entries(DEXTRO_THEMES)) {
         if (theme.background) { biomeImages[key] = new Image(); biomeImages[key].src = theme.background; }
@@ -203,6 +216,13 @@
     // canvasmaske, farveflade eller global gennemsigtighed.
     const middleGroundImage = new Image();
     middleGroundImage.src = 'assets/parallax-mid-continuous-v2.png?v=0.1.3';
+    const orchardMiddleImage = new Image();
+    orchardMiddleImage.src = 'assets/parallax-orchard-clean.png';
+    const stageMiddleImages = [orchardMiddleImage];
+    for(let stage=2;stage<=5;stage++){
+        const image=new Image();image.src=`assets/parallax-stage-${stage}.png`;
+        stageMiddleImages.push(image);
+    }
 
     // Store kildebilleder i høj opløsning, og skalér dem glat ned til spillets
     // lille canvas. Derved bevarer insulinpen og bolsje hver sin klare silhuet.
@@ -222,7 +242,7 @@
         return Math.floor(seconds * PICKUP_ANIMATION_FPS + offset) % PICKUP_ANIMATION_FRAMES;
     }
     pickupImages.pump.src = 'assets/insulin-pump.png';
-    pickupImages.autoPump.src = 'assets/insulin-pump-auto.png?v=backpack-1';
+    pickupImages.autoPump.src = 'assets/insulin-pump-auto-clean.png?v=clean-1';
 
     const characterImages = {
         idle: new Image(),
@@ -304,10 +324,14 @@
         playKeyboardMap.classList.toggle('over-dex', intro);
         playKeyboardMap.style.left = intro
             ? `${clamp((player.x + PLAYER_WIDTH / 2 - cameraX) / SCREEN_WIDTH * 100, 10, 88)}%`
-            : '59%';
+            : 'auto';
         playKeyboardMap.style.top = intro
-            ? `${(player.y + HUD_HEIGHT - 6) / SCREEN_HEIGHT * 100}%`
-            : '1.8%';
+            ? `${(player.y - 6) / SCREEN_HEIGHT * 100}%`
+            : 'auto';
+        // A/Z-påmindelsen står fast nederst til højre, over bundpanelet.
+        // Introens fulde tastatur beholder sin placering over DEX.
+        playKeyboardMap.style.right = intro ? 'auto' : '3%';
+        playKeyboardMap.style.bottom = intro ? 'auto' : '18%';
         playKeyboardMap.style.opacity = intro && !keyboardIntroWaiting
             ? String(clamp(keyboardIntroSeconds / 0.8, 0, 1)) : '1';
         playKeyboardMap.setAttribute('aria-label', intro
@@ -322,6 +346,8 @@
     let demoElapsedSeconds = 0;
     let demoJumpCooldownSeconds = 0;
     let lastDemoLevelIndex = -1;
+    let demoSequence = 0;
+    let demoLesson = null;
     let previousFrameTime = performance.now();
     let accumulatedTime = 0;
     let cameraX = 0;
@@ -342,9 +368,11 @@
     let remainingTimeSeconds = LEVEL_TIME_SECONDS;
     let bgAlarmZone = 'normal';
     let bgAlarmCooldownSeconds = 0;
+    let lastLowLampCycle = -1;
     let activeHint = null;
     let hintQueue = [];
     let physiologyEngine = null;
+    let dexActivity = null;
     let physiologyState = null;
     let elapsedRealSeconds = 0;
     let lastBGSampleTime = 0;
@@ -360,6 +388,7 @@
     let diamonds = [];
     let enemies = [];
     let cheeseProjectiles = [];
+    let bananaPeels = [];
     let particles = [];
     let tailSegments = [];
     let hudPickupFlights = [];
@@ -419,12 +448,17 @@
         // mave- og tarmkompartmenterne er tomme (COB 0 g).
         engine.initSteadyState({ targetBG: 6 });
         engine.consumeEvents();
+        baselineBGAction = engine.getPhysiologySnapshot().insulin.x1 || 1;
+        baselineDisposalAction = engine.getPhysiologySnapshot().insulin.x2;
+        bgHUDSignals = {cob:0,food:0,out:0,action:1,insulinClearance:0};
+        hudMeals.length = 0;
+        bgHUDRenderer?.reset();
         return engine;
     }
 
     function copyLevelObjects() {
         const level = getCurrentLevel();
-        platforms = level.platforms.map(p => ({...p, crumbleTime:null, collapsed:false, recoverTime:0}));
+        platforms = level.platforms.map(p => ({...p, crumbleTime:null, collapsed:false}));
         cacheBlocks = (level.blocks || []).map(b => ({...b, solid:true, used:false, bumpTime:0}));
         stageCues = (level.tutorialCues || []).map(c => ({...c, triggered:false}));
         items = level.items.map((item) => ({ ...item, collected: false }));
@@ -453,6 +487,7 @@
                 ? 2.2 + (index % 3) * 0.55
                 : 0,
             cheeseWindupTime: 0,
+            peelTimer: 3.5 + (index % 3),
             cheeseThrowCycleIndex: 0,
             eggState: enemy.eggDrop ? 'perched' : 'idle', eggTimer:0,
             eggHomeX:enemy.x, eggHomeY:enemy.y-8, eggRotation:0, eggVelocityY:0, eggTuck:0,
@@ -482,6 +517,7 @@
         audio.setTheme(DEXTRO_THEMES[getCurrentLevel().theme || 'orchard'].music);
         bgAlarmZone = 'normal';
         bgAlarmCooldownSeconds = 0;
+        lastLowLampCycle = -1;
         activeHint = null;
         hintQueue = [];
         cameraX = 0;
@@ -494,10 +530,14 @@
         messageAnchorX = 0;
         messageAnchorY = 0;
         particles = [];
+        muscleDust.reset();
         cheeseProjectiles = [];
+        bananaPeels = [];
         hudPickupFlights = [];
         stageClearTally = null;
+        dexActivity?.stop();
         physiologyEngine = createPhysiologyEngine();
+        dexActivity = new DexActivity(physiologyEngine);
         physiologyState = physiologyEngine.getState();
         copyLevelObjects();
         const level = getCurrentLevel();
@@ -510,6 +550,10 @@
             vy: 0,
             onGround: true,
             jumpCanBeShortened: false,
+            exerting: false,
+            // Udstyrets fysiologiske kobling er klar; ingen supersko er
+            // placeret i banerne, før selve opgraderingen implementeres.
+            superShoesActive: false,
             facing: 1,
             invulnerableTime: 1.2,
             animationTime: 0,
@@ -660,6 +704,7 @@
     }
 
     function showOverlay(title, subtitle, prompt, mode = 'game') {
+        overlay.classList.toggle('gallery-screen', mode === 'gallery');
         overlayTitle.textContent = title;
         overlaySubtitle.textContent = subtitle;
         overlaySubtitle.classList.remove('stage-tally');
@@ -674,6 +719,7 @@
     }
 
     function showAttractTitle() {
+        dexActivity?.stop();
         demoMode = false;
         keys.left = false;
         keys.right = false;
@@ -684,12 +730,12 @@
         demoBadge.setAttribute('aria-hidden', 'true');
         showOverlay(
             'DEXTRO DASH 2000',
-            'STARRING DEX',
+            'STARRING DEX\nA MONSTER WITH TYPE 1 DIABETES',
             'PRESS A BUTTON TO PLAY',
             'title',
         );
         if (attractAudioUnlocked) audio.attractTitle();
-        announce('DEXTRO DASH 2000. Starring DEX. Press an arrow key to play.');
+        announce('DEXTRO DASH 2000. Starring DEX, a monster with type 1 diabetes. Press an arrow key to play.');
     }
 
     function showAttractCredits() {
@@ -702,6 +748,50 @@
             'credits',
         );
         if (attractAudioUnlocked) audio.attractCredits();
+    }
+
+    let galleryPaint=[];
+    function showAttractGallery(monsters=false){
+        attractPhase=monsters?'monsters':'items';attractElapsedSeconds=0;
+        showOverlay(monsters?'MEET THE FOOD MONSTERS':'PICKUPS & PARTICLES',
+            monsters?'Eating changes DEX’s simulated glucose. Stomping earns points.':'Discover what each item does.',
+            'PRESS A BUTTON TO PLAY','gallery');
+        const notes={apple:'A walking fruit snack.',banana:'Drops slippery banana peel.',egg:'Watch out when he falls and rolls!',avocado:'Mostly fat, with little carbohydrate.',burger:'A mixed meal with carbohydrate, fat and protein.',cake:'A rich cake with carbohydrate and fat.',soda:'Warns before shaking. Shaking contact explodes; stomping gives a boost.',pizza:'Aims before throwing melted cheese.'};
+        const entries=monsters?Object.entries(FOOD_MONSTER_PROFILES).map(([type,p])=>[type,p.name,notes[type]||'A food monster.']):[
+            ['diamond','DIAMONDS','Collected diamonds add bonus points at level completion.'],
+            ['candy','CANDY','Stored for DEX. Press A to eat one.'],
+            ['insulin','INSULIN','Used on pickup, or stored in a pump with free space.'],
+            ['heart','EXTRA LIFE','A rare heart gives DEX one extra life.'],
+            ['superShoes','SUPER SHOES','More speed, higher jumps, faster falls and more activity.'],
+            ['pump','MANUAL PUMP','Stores three charges. Press Z to use a stored charge.'],
+            ['autoPump','AUTO PUMP','Stores three charges and acts automatically for DEX.'],
+            ['sugarCane','SUGAR CANE','Eaten on contact, unlike stored candy.'],
+            ['glucose','CARB / GLUCOSE PARTICLES','Gold particles show carbohydrate absorption and glucose movement.'],
+            ['insulinParticle','INSULIN PARTICLES','Turquoise particles represent insulin in the game display.']];
+        const gallery=document.getElementById('attractGallery');gallery.classList.toggle('monster-gallery',monsters);gallery.innerHTML='';galleryPaint=[];
+        for(const [type,name,note] of entries){
+            const card=document.createElement('div'),icon=document.createElement('canvas');
+            icon.width=120;icon.height=100;icon.setAttribute('aria-hidden','true');
+            const title=document.createElement('strong'),description=document.createElement('p');
+            title.textContent=name;description.textContent=note;
+            card.append(icon,title,description);gallery.append(card);
+            galleryPaint.push(()=>{
+                const c=icon.getContext('2d');c.clearRect(0,0,120,100);
+                if(monsters){const img=characterImages[type];if(img?.complete&&img.naturalWidth)c.drawImage(img,15,5,90,90);}
+                else if(type==='glucose'||type==='insulinParticle'){
+                    for(let n=0;n<7;n++){
+                        const x=60+Math.sin(attractElapsedSeconds+n*2.3)*33,y=50+Math.cos(attractElapsedSeconds*.7+n)*28;
+                        const glyph=type==='glucose'?DexGlucoseParticles.drawGlyph:DexGlucoseParticles.drawInsulinGlyph;
+                        glyph(c,x,y,4,1);
+                    }
+                }else if(type==='diamond'){
+                    c.fillStyle='#44ddff';c.strokeStyle='white';c.lineWidth=3;c.beginPath();c.moveTo(60,8);c.lineTo(83,40);c.lineTo(60,90);c.lineTo(37,40);c.closePath();c.fill();c.stroke();
+                }else if(type==='sugarCane'){
+                    c.save();c.translate(60,50);c.scale(3.5,3.5);drawPickup(type,0,0,75,true,c);c.restore();
+                }else drawPickup(type,60,50,75,true,c);
+            });
+        }
+        galleryPaint.forEach(paint=>paint());
     }
 
     function getDemoStartPositions() {
@@ -752,6 +842,9 @@
             if (dexRenderer) dexRenderer.reset();
         }
         demoMode = true;
+        demoLesson=null;
+        const lessonKind=['explore','food','insulin'][demoSequence++%3];
+        if(lessonKind!=='explore')setupDemoLesson(lessonKind);
         demoElapsedSeconds = 0;
         demoJumpCooldownSeconds = 0.55;
         gameState = 'playing';
@@ -786,6 +879,11 @@
 
     function updateAttractLoop(deltaSeconds) {
         attractElapsedSeconds += deltaSeconds;
+        if(attractPhase==='items'||attractPhase==='monsters'){
+            galleryPaint.forEach(paint=>paint());
+            if(attractElapsedSeconds>=18){if(attractPhase==='items')showAttractGallery(true);else startAttractDemo();}
+            return;
+        }
         if (attractPhase === 'title'
             && attractElapsedSeconds >= ATTRACT_TITLE_SECONDS) {
             showAttractCredits();
@@ -793,12 +891,19 @@
         }
         if (attractPhase === 'credits'
             && attractElapsedSeconds >= ATTRACT_CREDITS_SECONDS) {
-            startAttractDemo();
+            showAttractGallery();
         }
     }
 
     function updateDemoController(deltaSeconds) {
         demoElapsedSeconds += deltaSeconds;
+        if(demoLesson){
+            const done=demoLesson.kind==='food'?!demoLesson.target.alive:demoLesson.target.collected;
+            keys.left=false;keys.right=!done;
+            if(done&&demoLesson.contactBG===null)demoLesson.contactBG=getGameBG();
+            if(demoElapsedSeconds>=28)showAttractTitle();
+            return;
+        }
         demoJumpCooldownSeconds -= deltaSeconds;
         keys.left = false;
         keys.right = true;
@@ -824,6 +929,50 @@
         }
 
         if (demoElapsedSeconds >= ATTRACT_DEMO_SECONDS) showAttractTitle();
+    }
+
+    // Forfattede vignetter, kun i demo. Normal banestart genskaber alle
+    // objekter og standard-BG. Ingen efterfølgende manipulation af BG-kurven.
+    function setupDemoLesson(kind){
+        const x=400,floorY=154;
+        platforms=[{x:x-100,y:floorY,width:600,height:40,collapsed:false}];
+        cacheBlocks=[];items=[];enemies=[];diamonds=[];stageCues=[];
+        Object.assign(player,{x,y:floorY-PLAYER_HEIGHT,previousY:floorY-PLAYER_HEIGHT,vx:0,vy:0,onGround:true});
+        physiologyEngine.initSteadyState({targetBG:kind==='food'?4.4:11});
+        physiologyEngine.consumeEvents();physiologyState=physiologyEngine.getState();
+        let target;
+        if(kind==='food'){
+            target=createEnemy({type:'apple',x:x+72,y:floorY-14,minX:x+72,maxX:x+72,speed:0},0);
+            enemies.push(target);
+        }else{
+            target={type:'insulin',x:x+72,y:floorY-14,collected:false};items.push(target);
+        }
+        demoLesson={kind,target,contactBG:null};
+        cameraX=x-80;resetPlayerTail();dexRenderer?.reset();
+    }
+
+    function drawDemoCaption(){
+        if(!demoMode||gameState!=='playing')return;
+        let text;
+        if(demoLesson){
+            const {kind,contactBG}=demoLesson;
+            if(contactBG===null)text=kind==='food'?'DEX IS RUNNING. RUNNING USES GLUCOSE.':'DEX IS APPROACHING AN INSULIN PICKUP.';
+            else if(kind==='food')text=getGameBG()>contactBG+.2?'DEX IS RESTING. HIS BG IS RISING.':'DEX ATE AN APPLE. FOOD IS STILL BEING ABSORBED.';
+            else text=getGameBG()<contactBG-.2?'DEX IS RESTING. INSULIN IS STILL ACTING.':'DEX COLLECTED INSULIN. ITS EFFECT TAKES TIME.';
+        }else{
+            const tips=['ARROWS MOVE DEX. A SHORT UP PRESS MAKES A SMALL HOP.',
+                'EATING FOOD CHANGES BG. STOMPING MONSTERS GIVES POINTS.',
+                'PRESS "A" TO USE STORED CANDY. PRESS "Z" TO USE THE MANUAL PUMP.',
+                'INSULIN PICKUPS CAN ALSO MAKE DEX\'S BG TOO LOW.'];
+            text=tips[Math.min(3,Math.floor(demoElapsedSeconds/4))];
+        }
+        context.save();context.fillStyle='rgba(12,10,35,.88)';
+        context.fillRect(8,27,SCREEN_WIDTH-16,17);
+        context.font='bold 4.2px monospace';context.textAlign='center';context.textBaseline='middle';context.fillStyle='#e2f9ff';
+        context.fillText(text,SCREEN_WIDTH/2,34,SCREEN_WIDTH-28);
+        context.font='3px monospace';context.fillStyle='#b8b4d3';
+        context.fillText('DEMO — FICTIONAL DEX · PRESS A KEY TO PLAY',SCREEN_WIDTH/2,41);
+        context.restore();
     }
 
     function announce(text) {
@@ -894,7 +1043,7 @@
             - highBGFatigue * (1 - HIGH_BG_MIN_JUMP_HEIGHT_FACTOR);
         // Hoppehøjden er proportional med starthastighedens kvadrat. Roden
         // gør selve højden lineær i BG, ikke kun den indledende hastighed.
-        player.vy = JUMP_SPEED * Math.sqrt(jumpHeightFactor);
+        player.vy = JUMP_SPEED * Math.sqrt(jumpHeightFactor) * (player.superShoesActive?1.18:1);
         player.shortJumpSpeed = player.vy * SHORT_JUMP_SPEED_FACTOR;
         player.jumpCanBeShortened = true;
         player.onGround = false;
@@ -930,6 +1079,7 @@
             return false;
         }
         candyStock -= 1;
+        rememberHUDMeal('candy');
         player.candyUseTime = 0.9;
         player.eatAnimationTime = EAT_ANIMATION_SECONDS;
         score += 50;
@@ -1021,7 +1171,7 @@
         // Korte hændelsestekster fastholdes dér, hvor hændelsen skete. De
         // bliver derfor ikke ved med at følge DEX gennem banen.
         messageAnchorX = player.x - cameraX + PLAYER_WIDTH / 2;
-        messageAnchorY = HUD_HEIGHT + player.y - 5;
+        messageAnchorY = player.y - 5;
     }
 
     function updateHints(deltaSeconds) {
@@ -1064,6 +1214,7 @@
         }
         lives -= 1;
         gameState = 'dying';
+        dexActivity?.stop();
         deathTime = 1.7;
         deathReason = reason;
         player.vx = -player.facing * 22;
@@ -1115,6 +1266,7 @@
 
     function winLevel() {
         if (gameState !== 'playing') return;
+        dexActivity?.stop();
         if (demoMode) {
             showAttractTitle();
             return;
@@ -1380,7 +1532,14 @@
         updateHints(deltaSeconds);
         if (tutorialSlow) deltaSeconds *= tutorialSpeed;
         elapsedRealSeconds += deltaSeconds;
+        const previousTimerSecond = Math.ceil(remainingTimeSeconds);
         remainingTimeSeconds = Math.max(0, remainingTimeSeconds - deltaSeconds);
+        const timerSecond = Math.ceil(remainingTimeSeconds);
+        // Ét bip ved hvert nyt sekund, ikke ved hver frame. Følger spillets
+        // eget ur, så pause og tutorial-slowmotion også gælder advarslen.
+        if (timerSecond > 0 && timerSecond <= 10 && timerSecond < previousTimerSecond) {
+            audio.countdownBeep();
+        }
         if (remainingTimeSeconds <= 0) {
             loseLife('TIME UP');
             return;
@@ -1393,14 +1552,23 @@
         messageTime = Math.max(0, messageTime - deltaSeconds);
         updateStageObstacles(deltaSeconds);
         updatePlayer(deltaSeconds);
-        if (dexRenderer) dexRenderer.advance(deltaSeconds, player);
         updatePlayerTail(deltaSeconds);
         updateEnemies(deltaSeconds);
+        updateBananaPeels(deltaSeconds);
+        if(gameState !== 'playing') return;
         updateCheeseProjectiles(deltaSeconds);
+        if(gameState !== 'playing') return;
         collectObjects();
         updateParticles(deltaSeconds);
         updateHUDPickupFlights(deltaSeconds);
         updatePhysiology(deltaSeconds);
+        // Kontraktionsoptag er allerede indeholdt i motorens Q2-ligning.
+        // Det driver kun glimmeret her, ikke endnu et BG-fradrag.
+        if(gameState==='playing')muscleDust.update(deltaSeconds,
+            physiologyEngine.hovorka.beta*physiologyEngine.hovorka.state[HOVORKA_STATE_IDX.E1],
+            {x:player.x+PLAYER_WIDTH/2,y:player.y+PLAYER_HEIGHT});
+        if (dexRenderer) dexRenderer.advance(deltaSeconds, player,
+            physiologyEngine.smoothHeartRate,physiologyEngine.hovorka.HR_base);
         updateAutoPump(deltaSeconds);
         updateCamera();
 
@@ -1420,7 +1588,7 @@
             - highBGFatigue * (1 - HIGH_BG_MIN_ACCELERATION_FACTOR);
         const currentMaxRunSpeed = MAX_RUN_SPEED
             * (eating ? EATING_SPEED_FACTOR : 1)
-            * fatigueSpeedFactor;
+            * fatigueSpeedFactor * (player.superShoesActive?1.25:1);
         const currentRunAcceleration = RUN_ACCELERATION
             * (eating ? 0.18 : 1)
             * fatigueAccelerationFactor;
@@ -1451,10 +1619,15 @@
         }
         player.x = Math.min(getCurrentLevel().width - PLAYER_WIDTH, player.x);
 
-        player.vy += GRAVITY * deltaSeconds;
+        player.vy += GRAVITY * (player.superShoesActive&&player.vy>0?1.25:1) * deltaSeconds;
         player.y += player.vy * deltaSeconds;
         player.onGround = false;
         resolvePlatformCollisions();
+        // Mål reel bevægelse efter vægkollisioner, ikke blot en holdt tast.
+        // Hop opad er også arbejde; et passivt fald er ikke et cardio-pas.
+        const horizontalSpeed=deltaSeconds>0?Math.abs(player.x-previousX)/deltaSeconds:0;
+        player.exerting=(direction!==0 && horizontalSpeed>1)
+            || (!player.onGround && player.vy < -1);
         if (player.onGround && Math.abs(player.vx) > 1) {
             // Løbecyklussen følger den faktisk tilbagelagte afstand. Dermed
             // passer fodarbejdet til banens bevægelse ved alle hastigheder.
@@ -1506,6 +1679,18 @@
     function hitCacheBlock(block) {
         if (block.used) return;
         block.used = true; block.bumpTime = 0.2;
+        // Lodtræk først ved slaget, uafhængigt af banens faste seed og DEX's BG.
+        // Puljen beholder banens eksisterende udstyrstrin og madtyper.
+        const level = getCurrentLevel();
+        const rewards = [...new Set((level.blocks || []).map(b=>b.reward))];
+        const landingX = block.x + block.width / 2 + 48 - 11;
+        const canLand = platforms.some(p=>!p.collapsed && !p.crumble
+            && p.y>=block.y+block.height && p.x<=landingX && p.x+p.width>=landingX+22);
+        const eligible = rewards.filter(reward=>reward!=='monster'||canLand);
+        block.reward = eligible[Math.floor(Math.random()*eligible.length)] || 'diamonds';
+        if(block.reward==='monster'){
+            block.monsterType=level.roster[Math.floor(Math.random()*level.roster.length)];
+        }
         audio.pickup();
         if (block.reward === 'diamonds') {
             collectedDiamondCount += 5;
@@ -1515,8 +1700,7 @@
                 color:'#a1f4ff',text:'◆',fontSize:12});
         } else if (block.reward === 'monster') {
             const centerX = block.x + block.width / 2;
-            // Find en rigtig landingsflade ved siden af kassen. Indholdet er
-            // banedata, aldrig valgt efter spillerens BG eller udstyr.
+            // Find den landingsflade, der gjorde monsterudfaldet muligt.
             const landingX = centerX + 48 - 11;
             const floor = platforms.filter(p => !p.collapsed && !p.crumble
                 && p.y >= block.y + block.height && p.x <= landingX
@@ -1542,15 +1726,11 @@
         for (const block of cacheBlocks) block.bumpTime = Math.max(0,block.bumpTime-dt);
         for (const p of platforms) {
             if (!p.crumble) continue;
-            if (p.collapsed) {
-                p.recoverTime -= dt;
-                if (p.recoverTime <= 0 && !rectanglesOverlap(player.x,player.y,PLAYER_WIDTH,PLAYER_HEIGHT,p.x,p.y,p.width,p.height)) {
-                    p.collapsed=false; p.crumbleTime=null;
-                }
-            } else if (p.crumbleTime !== null) {
+            // Et sammenstyrtet gulv gendannes kun ved banens genstart.
+            if (!p.collapsed && p.crumbleTime !== null) {
                 p.crumbleTime -= dt;
                 if (p.crumbleTime <= 0) {
-                    p.collapsed=true; p.recoverTime=5;
+                    p.collapsed=true;
                     spawnParticles(p.x+p.width/2,p.y,'#aa988a',16);
                 }
             }
@@ -1603,7 +1783,7 @@
             // En rystende Fizzler og et Pizza Monster i kasteoptræk står stille.
             // Spilleren kan derfor aflæse begge angreb før kontaktøjeblikket.
             const enemySpeedFactor = enemy.fizzState === 'shaking'
-                || enemy.cheeseWindupTime > 0 || enemy.eggDrop
+                || enemy.cheeseWindupTime > 0 || enemy.eggDrop || enemy.peelThrow
                 ? 0
                 : 1;
             enemy.x += enemy.speed * enemy.direction * enemySpeedFactor * deltaSeconds;
@@ -1617,6 +1797,7 @@
                 enemy.direction *= -1;
                 enemy.x = clamp(enemy.x, enemy.minX, enemy.maxX - enemy.width);
             }
+            if(enemy.type==='banana') updateBananaDrop(enemy,deltaSeconds);
 
             if (player.eatAnimationTime <= 0
                 && player.onGround) {
@@ -1768,6 +1949,12 @@
         if (enemy.fizzTimer > 0) return;
 
         if (enemy.fizzState === 'normal') {
+            // Forvarslet er stadig spiseligt; kun den efterfølgende rystelse er farlig.
+            enemy.fizzState = 'warning';
+            enemy.fizzTimer = FIZZ_WARNING_SECONDS;
+            return;
+        }
+        if (enemy.fizzState === 'warning') {
             enemy.fizzState = 'shaking';
             enemy.fizzTimer = FIZZ_SHAKE_SECONDS;
             return;
@@ -1899,7 +2086,7 @@
         const referenceNutrition = monsterProfile.referenceNutrition;
         const portionScale = enemy.portionScale ?? (enemy.carbs === undefined ? 1 : enemy.carbs / referenceNutrition.carbs);
         const portionCarbs = referenceNutrition.carbs * portionScale;
-        physiologyEngine.addFood({
+        const accepted = physiologyEngine.addFood({
             carbs: portionCarbs,
             protein: referenceNutrition.protein * portionScale,
             fat: referenceNutrition.fat * portionScale,
@@ -1907,6 +2094,7 @@
             eatTimeMin: referenceNutrition.eatTimeMin * portionScale,
             carbParams: monsterProfile.carbParams,
         });
+        if (accepted) rememberHUDMeal(enemy.type);
 
         setMessage(
             `${monsterProfile.name} +${portionCarbs}g CARBS`,
@@ -1937,11 +2125,23 @@
             if (item.collected || !rectanglesOverlap(player.x, player.y, PLAYER_WIDTH,
                 PLAYER_HEIGHT, item.x - 11, item.y - 11, 22, 22)) continue;
 
+            // Den manuelle pumpe bliver liggende, når rygsækken er aktiv.
+            // Spring over før point, lyd, tips og pickup-animationer.
+            if (item.type === 'pump' && autoPumpActive) continue;
             item.collected = true;
             score += 100;
-            if (item.type === 'sugarCane') {
-                physiologyEngine.addFood({carbs:12,protein:0,fat:0,weight:12,eatTimeMin:0.4,
+            if(item.type==='heart'){
+                lives+=1;
+                spawnParticles(item.x,item.y,'#ff365b',14);
+                setMessage('EXTRA LIFE',1);audio.pickup();
+            }else if(item.type==='superShoes'){
+                player.superShoesActive=true;
+                spawnParticles(item.x,item.y,'#ffd85b',14);
+                setMessage('SUPER SHOES\nFaster running. Higher jumps. Faster falls.',2);audio.pickup();
+            }else if (item.type === 'sugarCane') {
+                const accepted = physiologyEngine.addFood({carbs:12,protein:0,fat:0,weight:12,eatTimeMin:0.4,
                     carbParams:{simpleFraction:1,fiberPerGram:0,retentionFactor:0.4}});
+                if (accepted) rememberHUDMeal('sugarCane');
                 player.candyUseTime=0.8; spawnMacroParticles(item.x,item.y,{carbs:12}); audio.candy();
             } else if (item.type === 'autoPump') {
                 startHUDPickupFlight('autoPump', item.x, item.y, 123, 23);
@@ -1952,7 +2152,7 @@
                 // Auto-pumpen er en opgradering. Eventuelle doser i den
                 // manuelle pumpe flyttes med over i rygsækkens tre pladser.
                 if (!autoPumpHintShown) {
-                    setMessage('HINT: AUTO PUMP\nStores 3 pens. Uses stored insulin automatically.\nExtra pens are used on contact when full.', 12);
+                    setMessage('HINT: AUTO PUMP\nStores 3 ampoules. Uses stored insulin automatically.\nExtra ampoules are used on contact when full.', 12);
                     autoPumpHintShown = true;
                 } else {
                     setMessage('AUTO PUMP READY', 0.9);
@@ -1972,7 +2172,7 @@
                 pumpHUDUnlocked = true;
                 remindActionKeys();
                 if (!pumpHintShown) {
-                    setMessage('HINT: MANUAL PUMP\nStores 3 pens. Press "Z" to use stored insulin.\nExtra pens are used on contact when full.', 12);
+                    setMessage('HINT: MANUAL PUMP\nStores 3 ampoules. Press "Z" to use stored insulin.\nExtra ampoules are used on contact when full.', 12);
                     pumpHintShown = true;
                 } else {
                     setMessage('PUMP READY', 0.8);
@@ -2031,8 +2231,24 @@
     }
 
     function updatePhysiology(deltaSeconds) {
+        if(gameState!=='playing'||!(deltaSeconds>0))return;
+        dexActivity.update({moving:player.exerting,superShoes:player.superShoesActive});
         physiologyEngine.step(deltaSeconds * SIMULATION_MINUTES_PER_REAL_SECOND);
         physiologyState = physiologyEngine.getState();
+        // Netto Q1-transport og basal/renal clearance; Q2 tælles ikke igen.
+        const p = physiologyEngine.getPhysiologySnapshot(), h = physiologyEngine.hovorka;
+        const q1 = h.state[HOVORKA_STATE_IDX.Q1], q2 = h.state[HOVORKA_STATE_IDX.Q2];
+        bgHUDSignals = {
+            // D1+D2 i gram: beholderen er ikke tom, mens optagelsen fortsætter.
+            // Motorens tidsestimat og pumpens interne COB forbliver uændret.
+            cob: (p.food.carbsInStomach+p.food.carbsInGut)*.18,
+            food: Math.max(0, p.food.carbAbsorption),
+            out: Math.max(0, p.insulin.x1*q1-h.k_12*q2) + Math.max(0,p.brain.f01c) + Math.max(0,h._lastFR||0),
+            action: p.insulin.x1/baselineBGAction,
+            // Kun ekstra disposal over startens basalvirkning; ikke Q1-transport.
+            extraDisposal: Math.max(0,p.insulin.x2-baselineDisposalAction)*q2,
+            insulinClearance: h.k_e*Math.max(0,(h.state[HOVORKA_STATE_IDX.I]-h.state[HOVORKA_STATE_IDX.Ib])*h.V_I)/1000,
+        };
 
         // HUD, alarmer og trendpil deler den samme sande BG-værdi. Der er derfor
         // hverken CGM-forsinkelse eller sensorstøj i arkadespillets feedback.
@@ -2061,6 +2277,14 @@
             bgAlarmZone = nextZone;
             bgAlarmCooldownSeconds = 0;
         }
+        if(bgAlarmZone==='low'){
+            const signal=window.DexGameRenderer.lowSignal(elapsedRealSeconds);
+            if(signal.cycle!==lastLowLampCycle){
+                lastLowLampCycle=signal.cycle;audio.lowBGAlarm();
+            }
+            return;
+        }
+        lastLowLampCycle=-1;
         bgAlarmCooldownSeconds = Math.max(0, bgAlarmCooldownSeconds - deltaSeconds);
         if (bgAlarmZone === 'normal' || bgAlarmCooldownSeconds > 0) return;
         if (bgAlarmZone === 'low') audio.lowBGAlarm();
@@ -2213,9 +2437,12 @@
         hudPickupFlights.push({
             type,
             startX: worldX - cameraX,
-            startY: worldY + HUD_HEIGHT,
-            targetX,
-            targetY,
+            startY: worldY,
+            // Lagerets lokale koordinater flyttes sammen med panelet.
+            targetX: targetX === 299 ? BG_HUD_X + 140
+                : targetX + (type === 'candy' ? CANDY_HUD_X : PUMP_HUD_X),
+            targetY: targetX === 299 ? HUD_TOP + 15
+                : targetY + HUD_TOP + (type === 'candy' ? 14 : 0),
             elapsedSeconds: 0,
             durationSeconds: 0.58,
             delaysHUDValue,
@@ -2232,26 +2459,108 @@
     }
 
     function render() {
-        drawBackground();
         context.save();
+        context.translate(0, -HUD_HEIGHT);
+        drawBackground();
+        context.restore();
+        context.save();
+        context.beginPath();
+        context.rect(0, 0, SCREEN_WIDTH, HUD_TOP);
+        context.clip();
         // Kameraet beholder decimalerne. Med Full HD-skalaen ville afrunding
         // til logiske pixels give synlige spring i alle parallaxlag.
-        context.translate(-cameraX, HUD_HEIGHT);
+        context.translate(-cameraX, 0);
         drawLevel();
         drawFinish();
         drawDiamonds();
         drawItems();
         drawEnemies();
         drawCheeseProjectiles();
+        drawBananaPeels();
         drawPlayer();
         drawEatenEnemyInMouth();
         drawPlayerActionEffects();
         drawParticles();
         context.restore();
-        drawVerticalBGIndicator();
         drawHUD();
+        drawDemoCaption();
+        // Støvet må fortsætte gennem den nederste HUD og ud over skærmkanten,
+        // i stedet for at forsvinde bag panelet ved jordlinjen.
+        context.save();context.translate(-cameraX,0);muscleDust.draw(context);context.restore();
         drawHUDPickupFlights();
         drawMessage();
+    }
+
+    // En dødelig skræl skal kunne passeres med et lille hop. Undgå lave
+    // tunneler, også når en kasse eller et gulv ligger tæt ved landingsstedet.
+    function bananaPeelHasHeadroom(x,floor){
+        const margin=PLAYER_WIDTH+10;
+        return ![...platforms,...cacheBlocks].some(p=>p!==floor&&!p.collapsed
+            && p.x<x+margin&&p.x+p.width>x-margin
+            && p.y<floor.y&&p.y+p.height>floor.y-PLAYER_HEIGHT-14);
+    }
+
+    function updateBananaDrop(enemy,dt) {
+        if(enemy.peelThrow){
+            const action=enemy.peelThrow,previous=action.age;
+            action.age+=dt;
+            // Slip først strimlen, når hånden er nået gennem kasteoptrækket.
+            if(previous<.85 && action.age>=.85 && !action.floor.collapsed
+                && bananaPeelHasHeadroom(action.x,action.floor)){
+                const hand=getBananaHandPose(.85),size=37;
+                bananaPeels.push({x:action.x,y:action.floor.y,age:0,floor:action.floor,
+                    direction:enemy.direction,
+                    startX:enemy.x+enemy.width/2+enemy.direction*hand.x*size/512,
+                    startY:enemy.y+enemy.height+size*23/512+hand.y*size/512});
+            }
+            if(action.age>=1.15)enemy.peelThrow=null;
+            return;
+        }
+        if(Math.abs(enemy.x-player.x)>SCREEN_WIDTH*.7 || enemy.speed<=0)return;
+        enemy.peelTimer-=dt;
+        if(enemy.peelTimer>0)return;
+        enemy.peelTimer=5.5;
+        const x=enemy.x+enemy.width/2-enemy.direction*26;
+        const floor=[...platforms,...cacheBlocks].find(p=>!p.collapsed
+            && Math.abs(p.y-enemy.y-enemy.height)<2 && x-5>=p.x && x+5<=p.x+p.width);
+        if(!floor||bananaPeels.length>=12||!bananaPeelHasHeadroom(x,floor))return;
+        enemy.peelThrow={age:0,x,floor};
+    }
+
+    function updateBananaPeels(dt) {
+        for(const peel of bananaPeels){
+            peel.age+=dt;
+            if(peel.floor.collapsed){peel.age=14;continue;}
+            // Kort synlig landingsanimation før skrællen bliver glat.
+            if(peel.age<.8||peel.age>=12||player.invulnerableTime>0)continue;
+            if(Math.abs(player.y+PLAYER_HEIGHT-peel.y)<=2
+                && player.x+PLAYER_WIDTH-3>peel.x-4&&player.x+3<peel.x+4){
+                loseLife('BANANA SLIP');break;
+            }
+        }
+        bananaPeels=bananaPeels.filter(p=>p.age<12);
+    }
+
+    function drawBananaPeels() {
+        for(const peel of bananaPeels){
+            const t=clamp(peel.age/.65,0,1);
+            context.save();context.translate(
+                peel.startX+(peel.x-peel.startX)*t,
+                peel.startY+(peel.y-2-peel.startY)*t-Math.sin(t*Math.PI)*8);
+            context.scale(peel.direction*37/512,37/512);
+            context.rotate(t*Math.PI*2.5);
+            context.globalAlpha=clamp((12-peel.age)/1.5,0,1);
+            // Samme strimmel som i hånden; rotationen lægger den fladt
+            // ved landingen i stedet for at forvandle den til en hel skræl.
+            context.fillStyle='#ffd43b';context.strokeStyle='#b67c16';context.lineWidth=3;
+            context.beginPath();context.moveTo(-8,0);
+            context.bezierCurveTo(-36,60,-7,90,25,90);
+            context.bezierCurveTo(40,72,28,42,10,0);
+            context.closePath();context.fill();context.stroke();
+            context.strokeStyle='#fff2a0';context.lineWidth=7;context.beginPath();
+            context.moveTo(0,14);context.quadraticCurveTo(-8,65,25,83);context.stroke();
+            context.restore();
+        }
     }
 
     function drawBackground() {
@@ -2264,6 +2573,9 @@
             const width=SCREEN_WIDTH+travel;
             const height=Math.max(SCREEN_HEIGHT-HUD_HEIGHT,width*biome.naturalHeight/biome.naturalWidth);
             context.drawImage(biome,-cameraX*0.018,SCREEN_HEIGHT-height,width,height);
+            if(stageMiddleImages[currentLevelIndex])drawMiddleGroundLayer();
+            else window.DextroScenery?.drawMiddle(context,{width:SCREEN_WIDTH,bottom:SCREEN_HEIGHT,
+                camera:cameraX,theme:getCurrentLevel().theme});
         } else {
             drawOverscannedBaseBackground();
             drawMiddleGroundLayer();
@@ -2294,7 +2606,8 @@
     }
 
     function drawMiddleGroundLayer() {
-        if (!middleGroundImage.complete || middleGroundImage.naturalWidth <= 0) return;
+        const layerImage = stageMiddleImages[currentLevelIndex] || middleGroundImage;
+        if (!layerImage.complete || layerImage.naturalWidth <= 0) return;
 
         // Laget bevæger sig lidt hurtigere end basisbaggrunden (0,02), men
         // langsomt nok til at bevare indtrykket af et egentligt mellemlag.
@@ -2303,31 +2616,62 @@
         // Den øverste halvdel af kildefilen er ren alfatransparens. Den
         // beskæres kun for at undgå at skalere tomme pixels; selve naturens
         // organiske overkant og alle detaljer forbliver urørte.
-        const sourceY = Math.floor(middleGroundImage.naturalHeight * 0.48);
-        const sourceHeight = middleGroundImage.naturalHeight - sourceY;
+        const sourceY = Math.floor(layerImage.naturalHeight * (currentLevelIndex>0&&currentLevelIndex<5?.32:.48));
+        const sourceHeight = layerImage.naturalHeight - sourceY;
         const maximumCameraX = Math.max(0, getCurrentLevel().width - SCREEN_WIDTH);
         const drawWidth = SCREEN_WIDTH + maximumCameraX * speed + 6;
-        const drawHeight = drawWidth * sourceHeight / middleGroundImage.naturalWidth;
+        const naturalDrawHeight = drawWidth * sourceHeight / layerImage.naturalWidth;
+        const drawHeight = currentLevelIndex>0&&currentLevelIndex<5 ? Math.min(currentLevelIndex===3?92:70,naturalDrawHeight) : naturalDrawHeight;
         const drawX = -cameraX * speed;
-        // Laget fortsætter under canvasbunden. Det sænker trætoppene og viser
-        // mere af bjergbaggrunden uden at skabe transparens langs nederkanten.
-        const drawY = SCREEN_HEIGHT - drawHeight + 12;
+        // Trælagene i de første to baner hæves 12 logiske pixels. Bunden
+        // når stadig under jordkanten, så der ikke opstår svævende træøer.
+        const drawY = SCREEN_HEIGHT - drawHeight + (currentLevelIndex<2||currentLevelIndex===3?0:12);
 
         context.save();
         context.beginPath();
         context.rect(0, HUD_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - HUD_HEIGHT);
         context.clip();
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
         context.drawImage(
-            middleGroundImage,
+            layerImage,
             0,
             sourceY,
-            middleGroundImage.naturalWidth,
+            layerImage.naturalWidth,
             sourceHeight,
             drawX,
             drawY,
             drawWidth,
             drawHeight,
         );
+        context.restore();
+    }
+
+    function drawPitFire(x, width, y) {
+        // Flammerne er forankret i hullet, ikke partikler som driver over gulvet.
+        const left=Math.max(x,cameraX-8),right=Math.min(x+width,cameraX+SCREEN_WIDTH+8);
+        if(right<=left)return;
+        context.save();context.beginPath();
+        context.rect(x,y-14,width,SCREEN_HEIGHT-HUD_HEIGHT-y+14);context.clip();
+        const glow=context.createLinearGradient(0,y-12,0,y+14);
+        glow.addColorStop(0,'rgba(255,100,0,0)');glow.addColorStop(.5,'#df4015');glow.addColorStop(1,'#ffbd32');
+        context.fillStyle=glow;context.fillRect(left,y-12,right-left,30);
+        for(let n=Math.floor(left/5);n<=Math.ceil(right/5);n++){
+            const phase=elapsedRealSeconds*5+n*2.37;
+            const height=8+Math.sin(phase)*3+Math.sin(phase*1.7)*2;
+            const cx=n*5,sway=Math.sin(phase*.8)*2;
+            for(let layer=0;layer<2;layer++){
+                const h=height*(layer?.65:1),w=layer?1.7:3.6;
+                context.fillStyle=layer?'#fff1a0':'#ff8c20';context.beginPath();
+                context.moveTo(cx-w,y+7);
+                context.bezierCurveTo(cx-w-1,y,cx+sway-2,y-h/2,cx+sway,y-h);
+                context.bezierCurveTo(cx+sway+1,y-h/2,cx+w+1,y+1,cx+w,y+7);
+                context.closePath();context.fill();
+            }
+            const rise=(elapsedRealSeconds*.65+n*.31)%1;
+            context.globalAlpha=1-rise;context.fillStyle='#ffe69a';
+            context.fillRect(cx+Math.sin(phase)*2,y+3-rise*17,.7,1.2);context.globalAlpha=1;
+        }
         context.restore();
     }
 
@@ -2346,6 +2690,7 @@
             if (platform.x > groundEnd) {
                 context.fillRect(groundEnd, getCurrentLevel().groundY,
                     platform.x - groundEnd, SCREEN_HEIGHT - HUD_HEIGHT - getCurrentLevel().groundY);
+                if(theme.lava)drawPitFire(groundEnd,platform.x-groundEnd,getCurrentLevel().groundY);
             }
             groundEnd = Math.max(groundEnd, platform.x + platform.width);
         }
@@ -2430,7 +2775,8 @@
             for (let row = 0; row < Math.ceil(height / 6); row++) {
                 const sy = y + 6 + row * 6 + seed * 1.5;
                 const sx = tx + 7 + Math.sin(tile + row * 3) * 2;
-                context.fillStyle = row % 2 ? '#72645a' : '#8b7961';
+                // Sten følger banens palet, så is/kælder ikke har brune jordpletter.
+                context.fillStyle = row % 2 ? theme.soil[1] : theme.detail;
                 context.beginPath();
                 context.moveTo(sx - 1.8, sy);
                 context.lineTo(sx, sy - 1);
@@ -2439,7 +2785,7 @@
                 context.lineTo(sx - 1.2, sy + 1);
                 context.closePath();
                 context.fill();
-                context.fillStyle = '#ac9270';
+                context.fillStyle = theme.top;
                 context.fillRect(sx - 0.5, sy - 0.5, 1.5, 0.4);
                 context.fillStyle = '#342b2c';
                 context.fillRect(tx + 1 + seed * 2, sy + 1, 0.9, 0.7);
@@ -2449,6 +2795,21 @@
         context.fillRect(x, y, width, 2);
         context.fillStyle = theme.trim;
         context.fillRect(x, y, width, 0.65);
+        // Sparsomme slidspor, fliser og revner inden for den faste hitbox.
+        // Samme mønster ved hvert besøg; hverken tilfældige huller eller kanter.
+        for(let tile=firstTile;tile<lastTile;tile++){
+            const tx=x+tile*12;
+            const detailSeed=Math.abs(Math.sin(tx*.61+y*1.7)*9321)%1;
+            if(detailSeed<.28){
+                context.strokeStyle=theme.soil[2];context.lineWidth=.4;
+                context.beginPath();context.moveTo(tx+2,y+2.4);context.lineTo(tx+5,y+5);
+                context.lineTo(tx+4,y+8);context.stroke();
+            }else if(detailSeed>.72){
+                context.fillStyle=theme.detail;
+                context.fillRect(tx+3,y+3.1,5,1);
+                context.fillStyle=theme.soil[2];context.fillRect(tx+3,y+4.1,5,.45);
+            }
+        }
         // Diskrete side- og bundskygger gør også de tynde svæveplatforme solide.
         context.fillStyle = 'rgba(13, 20, 25, 0.35)';
         context.fillRect(x, y + 3, 0.8, height - 3);
@@ -2630,7 +2991,76 @@
         }
     }
 
-    function drawPickup(type, x, y, size, showGlow) {
+    function drawPickup(type, x, y, size, showGlow, painter = context) {
+        const context = painter;
+        if(type==='heart'){
+            context.save();context.translate(x,y);
+            const beat=showGlow?1+.10*Math.sin(elapsedRealSeconds*6):1;
+            context.scale(size*beat/24,size*beat/24);
+            context.shadowColor='#ff214b';context.shadowBlur=showGlow?7:0;
+            const red=context.createLinearGradient(-7,-8,7,10);
+            red.addColorStop(0,'#ff8ca4');red.addColorStop(.45,'#f82c55');red.addColorStop(1,'#9b1236');
+            context.fillStyle=red;context.beginPath();context.moveTo(0,10);
+            context.bezierCurveTo(-19,-2,-9,-15,0,-6);
+            context.bezierCurveTo(9,-15,19,-2,0,10);context.fill();
+            context.shadowBlur=0;context.strokeStyle='#ffcfdb';context.lineWidth=1;
+            context.beginPath();context.moveTo(-7,-3);context.quadraticCurveTo(-8,-7,-4,-7);context.stroke();
+            context.restore();return;
+        }
+        if(type==='superShoes'){
+            context.save();context.translate(x,y);context.scale(size/25,size/25);
+            context.rotate(showGlow?Math.sin(elapsedRealSeconds*3)*.12:0);
+            for(const [dx,dy] of [[-4,-3],[3,4]]){
+                context.save();context.translate(dx,dy);
+                context.shadowColor='#40f5ff';context.shadowBlur=showGlow?5:0;
+                context.fillStyle='#159baa';context.beginPath();context.moveTo(-8,-6);
+                context.lineTo(-1,-6);context.lineTo(2,-1);context.quadraticCurveTo(10,-1,10,4);
+                context.lineTo(-9,4);context.closePath();context.fill();
+                context.shadowBlur=0;context.fillStyle='#f4f5ce';context.fillRect(-9,3,19,2);
+                context.strokeStyle='#ffdc4d';context.lineWidth=2;context.beginPath();
+                context.moveTo(-3,-5);context.lineTo(-5,-1);context.lineTo(0,-1);context.lineTo(-2,3);context.stroke();
+                context.restore();
+            }
+            context.restore();return;
+        }
+        if(type==='insulin') {
+            // Ensfarvet kapsel: en rumligt roterende midterakse med runde ender.
+            // Projektionen forkorter længden, men ikke tykkelsen. Dermed ligner
+            // rotationen et fast objekt i dybden og ikke et fladt ikon, der klemmes.
+            context.save();context.translate(x,y);context.scale(size/20,size/20);
+            const phase=showGlow?elapsedRealSeconds*Math.PI/2.8:0;
+            const axisX=Math.sin(phase)*.72,axisY=-Math.cos(phase);
+            const halfLength=5.2*Math.hypot(axisX,axisY),radius=3.5;
+            const angle=Math.atan2(axisX,-axisY)+.25;
+            context.rotate(angle);
+            const capsulePath=()=>{
+                context.beginPath();
+                context.moveTo(-radius,-halfLength);
+                context.arc(0,-halfLength,radius,Math.PI,Math.PI*2);
+                context.lineTo(radius,halfLength);
+                context.arc(0,halfLength,radius,0,Math.PI);
+                context.closePath();
+            };
+            context.shadowColor='#12f5dc';context.shadowBlur=showGlow?13:5;
+            const face=context.createLinearGradient(-radius,0,radius,0);
+            face.addColorStop(0,'#078f99');face.addColorStop(.27,'#38f3df');
+            face.addColorStop(.52,'#16dacd');face.addColorStop(1,'#057984');
+            context.fillStyle=face;capsulePath();context.fill();
+            context.shadowBlur=0;
+            context.save();capsulePath();context.clip();
+            // Refleksen flytter sig hen over den samme turkise overflade.
+            const sheenX=-1.1+Math.sin(phase)*.7;
+            const shine=context.createRadialGradient(sheenX,-halfLength,0,sheenX,-halfLength,6);
+            shine.addColorStop(0,'rgba(89,255,229,.75)');
+            shine.addColorStop(1,'rgba(24,235,215,0)');
+            context.fillStyle=shine;context.fillRect(-radius,-halfLength-radius,radius*2,(halfLength+radius)*2);
+            context.strokeStyle='rgba(104,255,235,.65)';context.lineWidth=.65;context.lineCap='round';
+            context.beginPath();context.moveTo(sheenX,-halfLength-1);
+            context.lineTo(sheenX,halfLength-1.5);context.stroke();context.restore();
+            context.strokeStyle='rgba(44,255,223,.7)';context.lineWidth=.3;
+            capsulePath();context.stroke();
+            context.restore();return;
+        }
         if(type==='sugarCane') {
             context.save(); context.translate(x,y); context.rotate(-0.2);
             context.lineWidth=3.6; context.strokeStyle='#fff7ef';context.lineCap='round';
@@ -2642,17 +3072,6 @@
         const image = pickupImages[type];
         const halfSize = Math.round(size / 2);
         const pumpPickup = type === 'pump' || type === 'autoPump';
-
-        if (showGlow && pumpPickup) {
-            context.fillStyle = type === 'autoPump'
-                ? 'rgba(255, 184, 58, 0.30)'
-                : type === 'pump'
-                    ? 'rgba(84, 244, 255, 0.28)'
-                    : 'rgba(255, 190, 55, 0.38)';
-            context.beginPath();
-            context.arc(x, y, halfSize + 3, 0, Math.PI * 2);
-            context.fill();
-        }
 
         if (image.complete && image.naturalWidth > 0) {
             context.imageSmoothingEnabled = true;
@@ -2682,12 +3101,7 @@
                 const sourceWidth = Math.round(image.naturalWidth * (automatic ? 0.73 : 0.677));
                 const sourceHeight = Math.round(image.naturalHeight * (automatic ? 0.74 : 0.717));
                 context.save();
-                if (showGlow) {
-                    context.shadowColor = automatic
-                        ? 'rgba(255, 186, 55, 0.96)'
-                        : 'rgba(83, 240, 255, 0.92)';
-                    context.shadowBlur = 10;
-                }
+                // Pumpen vises frit uden en farvet boble eller ydre glød.
                 context.drawImage(
                     image,
                     sourceX,
@@ -2780,6 +3194,16 @@
                 continue;
             }
             if (image && image.complete && image.naturalWidth > 0) {
+                if(enemy.type==='banana'){
+                    // En større, jordfast figur. Samme koordinater bruges af
+                    // hånden og kastet, så skrællen ikke springer ved slip.
+                    context.save();
+                    context.translate(enemy.x+enemy.width/2,enemy.y+enemy.height+37*23/512);
+                    context.scale(enemy.direction,1);
+                    drawWalkingEnemySprite(image,37,'banana',elapsedRealSeconds*10+enemyIndex*1.7,
+                        enemy.speed>0&&!enemy.peelThrow,enemy.peelThrow?.age);
+                    context.restore();continue;
+                }
                 const spriteSize = 31;
                     const motionFrames = [
                         { scaleX: 1.06, scaleY: 0.94, lift: 0, rotation: -0.035 },
@@ -2808,7 +3232,8 @@
                         : 0;
                     const shakeRotation = isShaking
                         ? Math.sin(elapsedRealSeconds * 51 + enemyIndex) * 0.055
-                        : 0;
+                        : enemy.fizzState === 'warning'
+                            ? Math.sin(elapsedRealSeconds * 18) * 0.025 : 0;
                     context.save();
                     if (enemy.eggState==='warning') {
                         context.fillStyle='#ffd664';context.font='bold 9px monospace';
@@ -2908,7 +3333,63 @@
         context.restore();
     }
 
-    function drawWalkingEnemySprite(image, spriteSize, enemyType, walkPhase, isMoving) {
+    function getBananaHandPose(age) {
+        const keys=[[0,-115,-205],[.25,-48,-305],[.65,-158,-245],[.85,-195,-335],[1.15,-115,-205]];
+        const t=clamp(age??0,0,1.15);
+        for(let i=1;i<keys.length;i++)if(t<=keys[i][0]){
+            const a=keys[i-1],b=keys[i],u=(t-a[0])/(b[0]-a[0]),s=u*u*(3-2*u);
+            return {x:a[1]+(b[1]-a[1])*s,y:a[2]+(b[2]-a[2])*s};
+        }
+    }
+
+    function drawWalkingEnemySprite(image, spriteSize, enemyType, walkPhase, isMoving, peelAge) {
+        if(enemyType==='banana'){
+            // Bananens sko starter højere end de andre figurers. To separate
+            // udsnit med hofteled giver tydelige skridt uden et ekstra sæt ben.
+            context.save();context.scale(spriteSize/512,spriteSize/512);
+            const swing=isMoving?Math.sin(walkPhase)*.6:0;
+            for(const [sx,sy,w,h,hx,hy,side] of [[140,365,96,111,-45,-139,-1],[282,405,108,84,49,-98,1]]){
+                context.save();context.translate(hx,hy);
+                context.rotate(side*swing);
+                context.drawImage(image,sx/512*image.naturalWidth,sy/512*image.naturalHeight,
+                    w/512*image.naturalWidth,h/512*image.naturalHeight,-w/2,0,w,h);
+                context.restore();
+            }
+            // Følg frugtens buede underside; den oprindelige benpose klippes væk.
+            context.save();context.beginPath();context.moveTo(-256,-512);context.lineTo(256,-512);
+            context.lineTo(256,-172);context.lineTo(118,-172);context.lineTo(125,-107);
+            context.quadraticCurveTo(22,-90,-38,-146);context.lineTo(-65,-172);
+            // Fjern den indbagte venstre arm; dens handske genbruges på et
+            // bevægeligt led i stedet for at vise to arme oven på hinanden.
+            context.lineTo(-58,-172);context.lineTo(-58,-228);
+            context.lineTo(-53,-280);context.lineTo(-256,-280);
+            context.closePath();context.clip();
+            context.drawImage(image,-256,-512,512,512);
+            context.restore();
+            const hand=getBananaHandPose(peelAge);
+            if(peelAge!==undefined && peelAge>=.25 && peelAge<.85){
+                const pull=clamp((peelAge-.25)/.4,0,1);
+                // Strimlen hænger først fast langs siden og løsnes fra top
+                // til bund. Den lyse inderside gør bevægelsen aflæselig.
+                const rootX=-45+(hand.x+25+45)*pull,rootY=-180+(hand.y+90+180)*pull;
+                context.fillStyle='#ffd43b';context.strokeStyle='#b67c16';context.lineWidth=3;
+                context.beginPath();context.moveTo(hand.x-8,hand.y);
+                context.bezierCurveTo(hand.x-36,hand.y+60,rootX-32,rootY,rootX,rootY);
+                context.bezierCurveTo(rootX+15,rootY-18,hand.x+28,hand.y+42,hand.x+10,hand.y);
+                context.closePath();context.fill();context.stroke();
+                context.strokeStyle='#fff2a0';context.lineWidth=7;context.beginPath();
+                context.moveTo(hand.x,hand.y+14);context.quadraticCurveTo(hand.x-8,hand.y+65,rootX,rootY-7);context.stroke();
+            }
+            const armShade=context.createLinearGradient(-53,-272,hand.x,hand.y+12);
+            armShade.addColorStop(0,'#9360ce');armShade.addColorStop(.5,'#67329c');armShade.addColorStop(1,'#402169');
+            context.lineCap='round';context.strokeStyle='#4e2681';context.lineWidth=25;
+            context.beginPath();context.moveTo(-53,-260);
+            context.quadraticCurveTo(hand.x-20,(hand.y-260)/2,hand.x,hand.y);context.stroke();
+            context.strokeStyle=armShade;context.lineWidth=19;context.stroke();
+            context.drawImage(image,120/512*image.naturalWidth,280/512*image.naturalHeight,
+                64/512*image.naturalWidth,64/512*image.naturalHeight,hand.x-32,hand.y-28,64,64);
+            context.restore();return;
+        }
         // Fjendebillederne er enkelte renderinger. For at få ægte benbevægelse
         // deles den nederste del i to halvdele, der roterer modsat hinanden.
         // Kroppen tegnes bagefter og skjuler samlingen ved hofterne.
@@ -2959,6 +3440,16 @@
     }
 
     function drawFizzStateEffect(enemy, centerX, bottomY, spriteSize, enemyIndex) {
+        if (enemy.type === 'soda' && enemy.fizzState === 'warning') {
+            // Samme udråbstegn som æggets forvarsel, uden skjold eller boble.
+            context.save();
+            context.fillStyle = '#ffd664';
+            context.font = 'bold 9px monospace';
+            context.textAlign = 'center';
+            context.fillText('!', centerX, bottomY - spriteSize - 3);
+            context.restore();
+            return;
+        }
         if (enemy.type !== 'soda' || enemy.fizzState !== 'shaking') return;
 
         const centerY = bottomY - spriteSize / 2;
@@ -3093,7 +3584,7 @@
         if (dexRenderer && dexRenderer.draw(context, player.x + PLAYER_WIDTH / 2,
             player.y + PLAYER_HEIGHT, {player, bg:getGameBG(), fatigue:getHighBGFatigue(),
                 gear:autoPumpActive?'backpack':pumpActive?'pump':'none', stock:pumpInsulinStored,
-                time:elapsedRealSeconds, dying:gameState==='dying'})) return;
+                time:elapsedRealSeconds, lowAlarm:bgAlarmZone==='low', dying:gameState==='dying'})) return;
 
         const pose = getPlayerAnimationPose();
         const image = pose.image;
@@ -3599,12 +4090,14 @@
         }
         if (player.insulinUseTime > 0) {
             const progress = 1 - player.insulinUseTime;
-            const pulse = Math.sin(progress * Math.PI);
-            context.strokeStyle = `rgba(85, 224, 255, ${pulse * 0.9})`;
-            context.lineWidth = 1;
-            context.beginPath();
-            context.ellipse(-1, -9, 8 + progress * 5, 6 + progress * 3, 0, 0, Math.PI * 2);
-            context.stroke();
+            // Turkise dråber fra udstyret ind i kroppen, aldrig en skjoldring.
+            for(let i=0;i<5;i++){
+                const t=clamp((progress-i*.09)/.55,0,1);
+                if(t<=0||t>=1)continue;
+                const source=player.insulinUseSource==='pen'?10:-14;
+                window.DexGlucoseParticles.drawInsulinGlyph(context,source*(1-t),-12+Math.sin(t*Math.PI)*2,
+                    .9,Math.sin(t*Math.PI));
+            }
             if (player.insulinUseSource === 'pen') {
                 const approach = Math.sin(Math.min(progress / 0.45, 1) * Math.PI / 2);
                 context.save();
@@ -3948,20 +4441,28 @@
 
     function drawHUD() {
         context.fillStyle = '#111329';
-        context.fillRect(0, 0, SCREEN_WIDTH, HUD_HEIGHT);
+        context.fillRect(0, HUD_TOP, SCREEN_WIDTH, HUD_HEIGHT);
         context.fillStyle = '#30366d';
-        context.fillRect(0, HUD_HEIGHT - 2, SCREEN_WIDTH, 2);
-        context.font = 'bold 7px monospace';
+        context.fillRect(0, HUD_TOP, SCREEN_WIDTH, .7);
+        drawBottomBGIndicator();
+        context.save();
+        context.font = 'bold 4.5px monospace';
         context.textBaseline = 'top';
-
         context.fillStyle = '#ffffff';
-        context.fillText(`SCORE ${score}`, 5, 4);
-        context.fillStyle = remainingTimeSeconds <= 20 ? '#ff687f' : '#ffffff';
-        context.fillText(
-            `S${currentLevelIndex + 1} L${lives} TIME ${Math.ceil(remainingTimeSeconds)}`,
-            5,
-            17,
-        );
+        context.fillText(`SCORE ${score}`, 5, HUD_TOP + 1.3);
+        const stageText = `STAGE ${currentLevelIndex + 1}`;
+        context.fillText(stageText, 91, HUD_TOP + 1.3);
+        // Ét hjerte pr. liv. Om nødvendigt pakkes de tættere, uden at flytte tiden.
+        const heartSpacing=Math.min(7,54/Math.max(1,lives));
+        for(let i=0;i<lives;i++)drawPickup('heart',121+i*heartSpacing,HUD_TOP+3.5,Math.min(6,heartSpacing),false);
+        // Kun tiden blinker. Mørkerød fase er stadig læsbar; aldrig usynlig tekst.
+        const urgentTime = remainingTimeSeconds > 0 && remainingTimeSeconds <= 10;
+        const timerPhase = Math.ceil(remainingTimeSeconds) - remainingTimeSeconds;
+        context.fillStyle = urgentTime ? (timerPhase < .5 ? '#ff405e' : '#a93248') : '#ffffff';
+        context.fillText(`TIME ${Math.ceil(remainingTimeSeconds)}`,
+            180, HUD_TOP + 1.3);
+        context.translate(PUMP_HUD_X, HUD_TOP);
+        context.font = 'bold 7px monospace';
 
         // A og Z står lodret som de fysiske taster, men hver række opdages
         // først gennem gameplay. Under den første flyvetur er destinationen
@@ -3973,10 +4474,13 @@
         const showCandyHUD = candyHUDUnlocked
             && (delayedCandyCount === 0 || candyStock > delayedCandyCount);
         if (showCandyHUD) {
+            context.save();
+            context.translate(CANDY_HUD_X-PUMP_HUD_X,14);
             context.fillStyle = '#ffd85b';
             context.fillText('A', 108, 4);
             drawPickup('candy', 123, 8, 13, false);
             context.fillText(`x${visibleCandyStock}`, 132, 4);
+            context.restore();
         }
 
         const pumpIsFlyingToHUD = hudPickupFlights.some(
@@ -4001,17 +4505,18 @@
             context.fillText(`${visiblePumpInsulin}/3`, 174, 19);
             for (let slotIndex = 0; slotIndex < 3; slotIndex += 1) {
                 const slotX = 134 + slotIndex * 12;
-                context.fillStyle = slotIndex < visiblePumpInsulin ? '#157faa' : '#0a1833';
+                context.fillStyle = slotIndex < visiblePumpInsulin ? '#103e42' : '#0a1833';
                 context.fillRect(slotX, 17, 10, 12);
-                context.strokeStyle = '#72dff4';
+                context.strokeStyle = slotIndex < visiblePumpInsulin ? '#40f5dc' : '#45556b';
                 context.lineWidth = 1;
                 context.strokeRect(slotX + 0.5, 17.5, 9, 11);
                 if (slotIndex < visiblePumpInsulin) {
-                    drawPickup('insulin', slotX + 5, 23, 10, false);
+                    drawPickup('insulin', slotX + 5, 23, 11.5, false);
                 }
             }
         }
 
+        context.restore();
     }
 
     function drawHUDPickupFlights() {
@@ -4039,117 +4544,104 @@
         }
     }
 
-    function drawVerticalBGIndicator() {
-        const top = HUD_HEIGHT + 25;
-        const height = 116;
-        const width = 6;
-        const bottom = top + height;
-        // Bagpladen er bredere end selve farvesøjlen, så HIGH og LOW kan stå
-        const scalePanelWidth = width + 16;
-        // Hele målerens bagplade flugter nu med canvasets højre kant. Søjlen
-        // beholder luft på begge sider inden i panelet, så labels ikke klippes.
-        const scalePanelLeft = SCREEN_WIDTH - scalePanelWidth;
-        const x = scalePanelLeft + 8;
-        const scalePanelTop = top - 11;
-        const scalePanelHeight = height + 22;
-        // COB og IOB flyttes til venstre for skalaens top. Tidligere optog de
-        // plads på højre side og tvang selve glukosemåleren ind på banen.
-        const statsPanelWidth = 38;
-        const statsPanelLeft = scalePanelLeft - statsPanelWidth;
+    // Væskehøjden følger sand BG. COB/IOB er beholdninger; partikler er fluxer.
+    function rememberHUDMeal(type) {
+        hudMeals.push({type,time:elapsedRealSeconds});
+        if(hudMeals.length>4)hudMeals.shift();
+    }
+
+    function getHUDMealFloatPose(age,index,cob) {
+        // Større madfigurer bruger den faktiske roterede firkants udstrækning
+        // i stedet for en stor sikkerhedscirkel. Det udnytter pladsen bedre,
+        // men holder stadig hele figuren i væsken og inden for glassets sider.
+        const depth=clamp(cob/40*14,.04,14);
+        const bottom=21.2,top=Math.max(8,bottom-depth);
+        const phase=age*.85+index*2.4;
+        const rotation=Math.sin(phase*.9)*.23;
+        const extentFactor=(Math.cos(rotation)+Math.abs(Math.sin(rotation)))/2;
+        const size=Math.min(12,(bottom-top)*.93,(bottom-top)*.48/extentFactor);
+        const radius=size*extentFactor;
+        return {size,radius,x:18+Math.sin(phase)*(10-radius),
+            y:(top+bottom)/2+Math.sin(phase*1.37+1)*Math.max(0,(bottom-top)/2-radius),
+            rotation};
+    }
+
+    function drawHUDMeals(y) {
+        // Rolig cirkulation i væsken; tiden står også stille under pause.
+        context.save();context.beginPath();context.rect(6,y+8,24,13.3);context.clip();
+        hudMeals.forEach((meal,index)=>{
+            const age=elapsedRealSeconds-meal.time;
+            if(age<0||age>20)return;
+            const pose=getHUDMealFloatPose(age,index,Math.max(0,bgHUDSignals.cob||0));
+            context.save();
+            context.globalAlpha=clamp(age/.4,0,1)*clamp((20-age)/12,0,1);
+            context.translate(pose.x,y+pose.y);context.rotate(pose.rotation);
+            context.scale(pose.size/20,pose.size/20);
+            if(meal.type==='candy'||meal.type==='sugarCane'){
+                drawPickup(meal.type,0,0,20,false);
+            }else{
+                const image=characterImages[meal.type];
+                if(image?.complete&&image.naturalWidth>0)context.drawImage(image,-10,-10,20,20);
+            }
+            context.restore();
+        });
+        context.restore();
+    }
+
+    function drawBottomBGIndicator() {
         const bg = getGameBG();
-        const minimumBG = 2.8;
-        const maximumBG = 19;
-        const rawIOB = physiologyState
-            ? (physiologyState.displayIOB ?? physiologyState.iob)
-            : 0;
-        const iob = Number.isFinite(rawIOB) ? Math.max(0, rawIOB) : 0;
-        const cob = physiologyState && Number.isFinite(physiologyState.cob)
-            ? Math.max(0, physiologyState.cob)
-            : 0;
-
-        // Den lodrette retning følger en velkendt måler: høje værdier ligger
-        // øverst og lave nederst. Alarmzonerne svarer til kindens CGM-farver.
-        const yForBG = (value) => bottom
-            - clamp((value - minimumBG) / (maximumBG - minimumBG), 0, 1) * height;
-        const highBoundaryY = yForBG(BG_GREEN_MAX_MMOL_L);
-        const lowBoundaryY = yForBG(BG_GREEN_MIN_MMOL_L);
-        const markerY = yForBG(bg);
-
+        const cob = Math.max(0, bgHUDSignals.cob || 0);
+        const iob = Math.max(0, physiologyState?.displayIOB ?? physiologyState?.iob ?? 0);
+        const y = HUD_TOP + 8;
         context.save();
-        // COB og IOB er fastgjort til skalaens top i stedet for til den øvre
-        // HUD-linje. Kolonnen står umiddelbart til venstre med COB øverst.
-        context.fillStyle = 'rgba(7, 9, 28, 0.82)';
-        context.fillRect(
-            statsPanelLeft,
-            top - 24,
-            statsPanelWidth,
-            21
-        );
-        context.font = 'bold 5px monospace';
-        context.textAlign = 'left';
-        context.textBaseline = 'top';
-        context.fillStyle = '#ffd85b';
-        context.fillText(`COB ${cob.toFixed(0)}g`, statsPanelLeft + 3, top - 22);
-        context.fillStyle = '#7cf5ff';
-        context.fillText(`IOB ${iob.toFixed(1)}U`, statsPanelLeft + 3, top - 13);
-
-        context.fillStyle = 'rgba(7, 9, 28, 0.82)';
-        context.fillRect(
-            scalePanelLeft,
-            scalePanelTop,
-            scalePanelWidth,
-            scalePanelHeight
-        );
-
-        context.fillStyle = '#f0a342';
-        context.fillRect(x, top, width, highBoundaryY - top);
-        context.fillStyle = '#54d982';
-        context.fillRect(x, highBoundaryY, width, lowBoundaryY - highBoundaryY);
-        context.fillStyle = '#ff5f78';
-        context.fillRect(x, lowBoundaryY, width, bottom - lowBoundaryY);
-
-        // Pulsen sidder på den eksisterende skala, ikke som endnu en BG-bar.
-        // Normalområdet er roligt; lave værdier pulserer hurtigere end høje.
-        if (bg < BG_GREEN_MIN_MMOL_L || bg > BG_GREEN_MAX_MMOL_L) {
-            const low = bg < BG_GREEN_MIN_MMOL_L;
-            const pulse = 0.5 + 0.5 * Math.sin(elapsedRealSeconds * (low ? 8 : 3.5));
-            context.strokeStyle = low ? `rgba(255, 72, 110, ${0.35 + pulse * 0.65})`
-                : `rgba(255, 177, 62, ${0.35 + pulse * 0.65})`;
-            context.lineWidth = 1.5 + pulse;
-            context.shadowColor = low ? '#ff456e' : '#ffb23f';
-            context.shadowBlur = 3 + pulse * 5;
-            context.strokeRect(x - 2, top - 2, width + 4, height + 4);
-            context.shadowBlur = 0;
+        context.translate(BG_HUD_X, 0);
+        const rendered = bgHUDRenderer?.draw(context, 0, y-7, {
+            ...bgHUDSignals, bg, cob, iob, time: elapsedRealSeconds,
+        });
+        // Bevar målingen ved manglende WebGL eller tabt grafikkontekst.
+        const color = bg < 4 ? '#ff4d71' : bg > 10 ? '#f7a839' : '#26c67d';
+        if (!rendered) {
+            context.strokeStyle = color;
+            context.lineWidth = 1.8;
+            context.strokeRect(45, y+2, 72, 20);
+            const height = clamp((bg-2.8)/16.2, .02, 1)*17;
+            context.fillStyle = '#ffc943';
+            context.fillRect(46, y+22-height, 70, height);
         }
-
-        context.strokeStyle = 'rgba(255, 255, 255, 0.78)';
-        context.lineWidth = 1;
-        context.strokeRect(x - 0.5, top - 0.5, width + 1, height + 1);
-
-        // Den hvide pil og den lille talbrik bevæger sig sammen med sand BG.
-        // Tallet giver præcision, mens højden kan aflæses i periferien.
-        context.fillStyle = '#ffffff';
-        context.beginPath();
-        context.moveTo(x - 1, markerY);
-        context.lineTo(x - 6, markerY - 3);
-        context.lineTo(x - 6, markerY + 3);
-        context.closePath();
-        context.fill();
-        context.fillStyle = 'rgba(7, 9, 28, 0.86)';
-        context.fillRect(x - 33, markerY - 5, 26, 10);
-        context.fillStyle = '#ffffff';
-        context.font = 'bold 6px monospace';
-        context.textAlign = 'right';
-        context.textBaseline = 'middle';
-        context.fillText(`${bg.toFixed(1)}${getTrendArrow()}`, x - 8, markerY);
-
-        context.font = 'bold 5px monospace';
+        if (!rendered && (bg < 4 || bg > 10)) {
+            const pulse = .5+.5*Math.sin(elapsedRealSeconds*(bg<4?8:3.5));
+            context.strokeStyle = color;
+            context.globalAlpha = .3+.7*pulse;
+            context.lineWidth = 1.8;
+            context.strokeRect(45, y+2, 72, 20);
+            context.globalAlpha = 1;
+        }
+        drawHUDMeals(y);
+        context.textBaseline = 'top';
+        context.font = 'bold 4px monospace';
+        context.fillStyle = '#ffd85b';
+        context.font = 'bold 3.5px monospace';
         context.textAlign = 'center';
-        context.textBaseline = 'middle';
-        context.fillStyle = '#ffd0a1';
-        context.fillText('HIGH', x + width / 2, top - 7);
-        context.fillStyle = '#ffb3c0';
-        context.fillText('LOW', x + width / 2, bottom + 7);
+        context.fillText(`COB ${cob.toFixed(0)}g`, 18, y+4, 22);
+        context.fillStyle = '#7cf5ff';
+        context.fillText(`IOB ${iob.toFixed(1)}U`, 140, y+4, 24);
+        context.textAlign = 'left';
+        context.fillStyle = '#d2dbea';
+        context.fillText('HIGH', 49, y+4);
+        context.fillText('LOW', 49, y+17);
+        context.font = 'bold 6.5px monospace';
+        context.textAlign = 'center';
+        context.fillStyle = color;
+        if(bg<4){
+            const pulse=.5+.5*Math.sin(elapsedRealSeconds*8);
+            context.fillStyle=`rgb(${Math.round(190+65*pulse)}, ${Math.round(25+45*pulse)}, ${Math.round(45+45*pulse)})`;
+            context.shadowColor='#ff264c';context.shadowBlur=3+7*pulse;
+        }
+        // Mørk kontur bevarer læsbarheden også hen over den gule væske.
+        context.strokeStyle = '#111527';context.lineWidth = .9;
+        const label=`BG ${bg.toFixed(1)} ${getTrendArrow()}`;
+        context.strokeText(label,81,y+8);
+        context.fillText(label,81,y+8);
         context.restore();
     }
 
@@ -4192,7 +4684,7 @@
             context.strokeStyle = 'rgba(13, 9, 37, 0.72)';
             context.fillStyle = '#fff3a3';
             const x = Math.round(clamp(messageAnchorX, 34, SCREEN_WIDTH - 34));
-            const y = Math.round(clamp(messageAnchorY, HUD_HEIGHT + 10, SCREEN_HEIGHT - 20));
+            const y = Math.round(clamp(messageAnchorY, 10, HUD_TOP - 8));
             context.strokeText(message, x, y, SCREEN_WIDTH - 50);
             context.fillText(message, x, y, SCREEN_WIDTH - 50);
         }

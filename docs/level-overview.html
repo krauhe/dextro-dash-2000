@@ -44,6 +44,7 @@ function drawAll(){
         const heading=document.createElement('h2');heading.textContent=`${level.stage}. ${level.name} — ${level.theme}`;
         const meta=document.createElement('p');meta.className='meta';
         meta.textContent=`${level.width} units · ${level.platforms.length} platforms · ${level.diamonds.length} diamonds · ${level.enemies.length} food monsters${level.draft?' · DRAFT / '+level.themeProposal:''}`;
+        if(level.obstacleUnits?.length) meta.textContent+=' · '+level.obstacleUnits.map(u=>`${u.name}: ${u.x}–${u.x+u.width}`).join(' / ');
         const viewport=document.createElement('div');viewport.className='viewport';
         const canvas=document.createElement('canvas');viewport.append(canvas);card.append(heading,meta,viewport);maps.append(card);
         const width=Math.max(280,viewport.clientWidth)*Number(zoom.value), height=240, dpr=devicePixelRatio||1;
@@ -54,6 +55,8 @@ function drawAll(){
         const X=x=>16+x*sx,Y=y=>24+(y-minY)*sy;
         ctx.strokeStyle='#223450';ctx.lineWidth=1;ctx.font='11px monospace';ctx.fillStyle='#7289ad';
         for(let x=0;x<level.width;x+=320){ctx.beginPath();ctx.moveTo(X(x),18);ctx.lineTo(X(x),222);ctx.stroke();ctx.fillText(x,X(x),234);}
+        // Afgræns de nye forhindringsområder uden at skjule banens geometri.
+        for(const unit of level.obstacleUnits||[]){ctx.fillStyle='#84aaff12';ctx.fillRect(X(unit.x),18,unit.width*sx,204);ctx.strokeStyle='#84aaff';ctx.strokeRect(X(unit.x),18,unit.width*sx,204);ctx.fillStyle='#c3d4ff';ctx.font='10px monospace';ctx.fillText(unit.name,X(unit.x)+3,14);}
         for(const p of level.platforms){ctx.fillStyle=p.solid?'#706383':p.crumble?'#ad7459':'#1d665e';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,p.solid?p.height*sy:Math.min(18,p.height*sy));ctx.fillStyle='#65daa6';ctx.fillRect(X(p.x),Y(p.y),p.width*sx,3);}
         for(const b of level.blocks||[]){ctx.fillStyle='#a8efff';ctx.fillRect(X(b.x),Y(b.y),Math.max(5,b.width*sx),b.height*sy);ctx.font='10px monospace';ctx.fillText(b.reward==='monster'?'? '+b.monsterType:b.reward,X(b.x),Y(b.y)-5);}
         for(const e of level.enemies){
@@ -63,7 +66,7 @@ function drawAll(){
         for(const item of level.items){
             ctx.fillStyle=item.type==='insulin'?'#35e0ef':item.type==='candy'?'#fc5b78':'#ffe081';
             ctx.beginPath();ctx.arc(X(item.x),Y(item.y),4,0,Math.PI*2);ctx.fill();
-            if(item.type.includes('Pump')||item.type==='pump'){ctx.font='10px monospace';ctx.fillText(item.type,X(item.x)-10,Y(item.y)-9);}
+            if(item.type.includes('Pump')||['pump','heart','superShoes'].includes(item.type)){ctx.font='10px monospace';ctx.fillText(item.type,X(item.x)-10,Y(item.y)-9);}
         }
         for(const [x,y] of level.diamonds){
             const risky=level.items.some(i=>i.type==='insulin'&&Math.abs(i.x-x)<23&&Math.abs(i.y-y)<21)||level.enemies.some(e=>Math.abs(e.x-x)<28&&Math.abs(e.y-y)<23);

@@ -10,6 +10,10 @@ for(const stage of [1,2,3,4,5,6,7,8,9,10,10]){
     execFileSync(process.execPath,[path.join(root,'tools/generate-level.cjs'),'--stage',String(stage),'--seed','42','--out',file]);
     const level=JSON.parse(fs.readFileSync(file,'utf8'));generated.push(level);
     assert.equal(level.draft,true);assert.ok(level.finishX<level.width);
+    const hearts=level.items.filter(item=>item.type==='heart');
+    assert.ok(hearts.length<=(stage%2===0?1:0));
+    for(const heart of hearts)assert.ok(heart.y<=86,'heart on elevated optional route');
+    assert.ok(!level.blocks.some(block=>block.reward==='heart'));
     assert.deepEqual([...new Set(level.enemies.map(e=>e.type))].sort(),[...level.roster].sort());
     for(const p of level.platforms){assert.ok(p.x>=0&&p.x+p.width<=level.width);assert.ok(p.y>=30&&p.y<=level.groundY);}
     for(const e of level.enemies){
@@ -23,7 +27,7 @@ for(const stage of [1,2,3,4,5,6,7,8,9,10,10]){
         assert.ok(supported(e.x,e.x+22),`${stage} ${e.type} starts on ground`);
         if(!e.eggDrop)assert.ok(supported(e.minX,e.maxX),`${stage} ${e.type} patrol`);
     }
-    for(const item of level.items)assert.ok(['candy','insulin','pump','autoPump','sugarCane'].includes(item.type));
+    for(const item of level.items)assert.ok(['candy','insulin','pump','autoPump','sugarCane','heart','superShoes'].includes(item.type));
     assert.ok(level.blocks.some(b=>b.reward==='monster'));
     for(const block of level.blocks) {
         assert.ok(['diamonds','candy','pump','autoPump','monster'].includes(block.reward));

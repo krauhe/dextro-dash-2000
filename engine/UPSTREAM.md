@@ -9,7 +9,7 @@ The physiology engine in DEXTRO DASH 2000 is synchronized from the public [T1D S
 | `js/hovorka.js` | `engine/hovorka.js` |
 | `js/physiology-engine.js` | `engine/physiology-engine.js` |
 
-These are direct copies. Game-specific configuration and mechanics remain in `game.js`; the synchronized files must not contain DEXTRO DASH-specific changes.
+These are direct copies. Game-specific configuration and mechanics remain in `game.js` and `dex-activity.js`; the synchronized files must not contain DEXTRO DASH-specific changes. The activity adapter uses the imported cardio presets and retains physiological recovery; its compatibility tests run during synchronization.
 
 ## Automated update process
 

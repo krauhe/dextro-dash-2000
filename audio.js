@@ -33,17 +33,23 @@ class GlucoseRunnerAudio {
         // Originale arrangementer: grottens langsomme molmotiv, isens klokker
         // og vulkanens bastema deler pulsen, men ikke det lyse hovedarrangement.
         const ice=this.theme==='ice', fire=this.theme==='volcano';
+        const dark=this.theme==='dark';
         const roots=fire?[38,34,36,33]:ice?[50,46,48,45]:[45,41,38,40];
         const phrase=ice?[12,null,19,15,null,22,19,null]:fire?[0,null,7,10,7,null,3,2]:[12,null,15,null,19,17,null,14];
         const index=this.step%32, beat=index%8, root=roots[Math.floor(index/8)];
         const note=phrase[beat];
         if(note!==null) {
-            this.tone(root+note,ice?0.48:0.24,ice?'sine':'triangle',0.028,0,'music');
+            this.tone(root+note,ice?0.48:dark?0.42:0.24,ice?'sine':'triangle',dark?0.045:0.028,0,'music');
             this.tone(root+note,0.25,'sine',0.008,0.17,'music');
         }
         if(beat===0) {
-            this.tone(root,0.85,'triangle',0.03,0,'music');
-            for(const interval of [12,15,19]) this.tone(root+interval,1.2,'sine',0.008,0,'music');
+            this.tone(root,dark?1.35:0.85,'triangle',dark?0.055:0.03,0,'music');
+            for(const interval of [12,15,19]) this.tone(root+interval,1.2,'sine',dark?0.014:0.008,0,'music');
+        }
+        // En mørk ostinat holder kælderen hørbar mellem melodiens pauser.
+        if(dark){
+            this.tone(root+[12,7,15,7,12,7,19,10][beat],.32,'triangle',.018,0,'music');
+            if(beat===4)this.tone(root-12,.65,'sine',.03,0,'music');
         }
         if(beat===0||beat===4) this.sweep(fire?120:80,38,0.16,'sine',fire?0.03:0.014,0,'music');
         if(fire && beat%2===0) this.noise(0.035,0.008,'music');
@@ -272,11 +278,9 @@ class GlucoseRunnerAudio {
     }
 
     lowBGAlarm() {
-        // Tre korte, lyse faldende toner: tydeligt anderledes end høj-signalet.
+        // Ét kort bip pr. rød LED-puls. Ingen ekstra forsinkede toner.
         if (!this.effectsEnabled) return;
-        [79, 76, 72].forEach((note, index) => {
-            this.tone(note, 0.10, 'triangle', 0.075, index * 0.14);
-        });
+        this.tone(79, 0.14, 'triangle', 0.075);
     }
 
     highBGAlarm() {
@@ -337,6 +341,11 @@ class GlucoseRunnerAudio {
         [72, 76, 79, 84].forEach((note, index) => {
             this.tone(note, 0.24, 'square', 0.075, index * 0.1);
         });
+    }
+
+    countdownBeep() {
+        // Kort og afdæmpet; standardkanalen respekterer SOUND-kontakten.
+        this.tone(76, 0.09, 'sine', 0.04);
     }
 
     tallyTick(step = 0) {

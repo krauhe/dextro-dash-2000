@@ -4,6 +4,12 @@
  */
 (function(root){
     'use strict';
+    // Samme ur og puls bruges af lampen og alarmen; løbeanimationens fase
+    // må aldrig styre blinkhastigheden. Én tydelig rød puls pr. 0.8 sekund.
+    function lowSignal(time){
+        const cycle=Math.floor(time/.8),phase=time/.8-cycle;
+        return {cycle,strength:phase<.24?Math.sin(Math.PI*phase/.24):0};
+    }
     function create(){
         if(!root.THREE||!root.Dex3D)return null;
         const T=root.THREE,canvas=document.createElement('canvas');
@@ -20,16 +26,23 @@
         const key=new T.DirectionalLight(0xffeedb,2.8);key.position.set(-3,6,5);scene.add(key);
         const rim=new T.DirectionalLight(0x86beff,1.3);rim.position.set(3,3,-3);scene.add(rim);
         const dex=root.Dex3D.create();scene.add(dex.group);
+        const glowCanvas=document.createElement('canvas');glowCanvas.width=glowCanvas.height=64;
+        const glowContext=glowCanvas.getContext('2d'),gradient=glowContext.createRadialGradient(32,32,1,32,32,32);
+        gradient.addColorStop(0,'rgba(255,255,255,1)');gradient.addColorStop(.25,'rgba(255,255,255,.65)');gradient.addColorStop(1,'rgba(255,255,255,0)');
+        glowContext.fillStyle=gradient;glowContext.fillRect(0,0,64,64);
+        const glow=new T.Sprite(new T.SpriteMaterial({map:new T.CanvasTexture(glowCanvas),transparent:true,depthWrite:false,toneMapped:false}));
+        glow.position.set(0,0,.11);glow.scale.set(.7,.7,1);dex.sensor.add(glow);
         const scale=9,span=4.8*scale,activity=root.Dex3D.activityState();
         let available=true,renderCount=0,mouthPoints=[];
         let wasGrounded=true,lastVerticalSpeed=0,landingAge=1,landingStrength=0;
         canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();available=false;});
         function reset(){Object.assign(activity,root.Dex3D.activityState());wasGrounded=true;lastVerticalSpeed=0;landingAge=1;landingStrength=0;}
-        function advance(dt,player){
+        function advance(dt,player,heartRate=60,restingHeartRate=60){
             landingAge+=dt;
             if(player.onGround&&!wasGrounded){landingAge=0;landingStrength=Math.max(.2,Math.min(1,lastVerticalSpeed/240));}
             wasGrounded=player.onGround;lastVerticalSpeed=player.vy;
-            root.Dex3D.advanceActivity(activity,player.onGround&&Math.abs(player.vx)>4?'run':'idle',dt);
+            const effort=root.Dex3D.breathingEffort(heartRate,restingHeartRate);
+            root.Dex3D.advanceActivity(activity,player.onGround&&Math.abs(player.vx)>4?'run':'idle',dt,effort);
         }
         function project(point){point.project(camera);return {x:point.x*span/2,y:-(point.y*2.4+2.3)*scale};}
         function draw(ctx,x,feet,state){
@@ -40,7 +53,7 @@
             const phase=eating?Math.min(.999,1-(p.eatAnimationTime>0?p.eatAnimationTime/.92:p.candyUseTime/.9)):
                 !p.onGround?Math.max(.05,Math.min(.95,.5+p.vy/520)):
                 running?(p.runAnimationDistance/20)%1:(p.animationTime*.72)%1;
-            const options={...activity,motion,bg:state.bg,gear:state.gear,stock:state.stock,
+            const options={...activity,motion,bg:state.bg,gear:state.gear,stock:state.stock,superShoes:p.superShoesActive,
                 verticalSpeed:p.vy,landing:landingAge<.5?landingStrength*Math.exp(-landingAge*9)*Math.cos(landingAge*17):0,
                 expression:state.fatigue>.55?'sleepy':state.fatigue>.1?'grumpy':'happy',
                 cgm:true,lookYaw:-p.facing*.65,autoMouth:true};
@@ -57,9 +70,13 @@
             const high=Math.max(0,Math.min(1,(state.bg-8)/10));
             const severity=Math.max(low,high),period=1.32-low*.78+high*.18,t=(state.time/period)%1;
             const peak=center=>{const d=Math.abs(t-center);return Math.exp(-Math.pow(Math.min(d,1-d)/.075,2));};
-            const strength=Math.max(peak(.13),peak(.34)*high);
+            const lowAlarm=state.lowAlarm??state.bg<4;
+            const strength=lowAlarm?lowSignal(state.time).strength:Math.max(peak(.13),peak(.34)*high);
             const lampColor=new T.Color(0x10cb3d).lerp(new T.Color(low>0?0xe82746:0xed8a13),severity);
+            if(lowAlarm)lampColor.set(0xff1744);
             dex.lamp.material.color.set(0x032310).lerp(lampColor,strength);
+            glow.material.color.copy(lampColor);glow.material.opacity=strength*.9;
+            glow.scale.setScalar(.55+strength*.35);
             scene.updateMatrixWorld(true);
             // Projektion af den faktiske mundkant bruges til det spiste monster.
             const positions=dex.faceGeometry.attributes.position;
@@ -93,5 +110,5 @@
             get mouthAnchor(){return mouthPoints.length?mouthPoints.reduce((a,p)=>({x:a.x+p.x/mouthPoints.length,y:a.y+p.y/mouthPoints.length}),{x:0,y:0}):{x:5,y:-12};},
             get available(){return available;},get renderCount(){return renderCount;}};
     }
-    root.DexGameRenderer={create};
+    root.DexGameRenderer={create,lowSignal};
 })(globalThis);

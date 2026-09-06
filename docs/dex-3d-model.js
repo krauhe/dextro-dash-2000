@@ -9,14 +9,19 @@
     const smooth=v=>{const t=clamp(v,0,1);return t*t*(3-2*t);};
     // Visuel spilkurve, ikke en fysiologisk model eller behandlingsgrænse.
     function bgDroop(bg=6){return smooth(Math.max((4-bg)/1.5,(bg-10)/9));}
-    // Kun visuel aktivitet. Spillets fremtidige integration kan levere indsats
-    // fra sin egen bevægelse; der beregnes ingen BG-ændring eller behandling her.
+    // Værkstedet kan simulere indsats; spillet leverer den fra motorens puls.
+    // Denne mapping styrer kun udtryk, ikke vejrtræknings- eller BG-fysiologi.
+    function breathingEffort(heartRate,restingHeartRate=60){
+        if(!Number.isFinite(heartRate)||!Number.isFinite(restingHeartRate))return 0;
+        return clamp((heartRate-restingHeartRate)/Math.max(1,160-restingHeartRate),0,1);
+    }
     function activityState(){return {clock:0,idleSeconds:0,effort:0,breathPhase:0};}
-    function advanceActivity(state,motion,seconds){
+    function advanceActivity(state,motion,seconds,physiologyEffort){
         const dt=clamp(seconds,0,.1);state.clock+=dt;
         state.idleSeconds=motion==='idle'?state.idleSeconds+dt:0;
         const previousEffort=state.effort;
-        state.effort=clamp(state.effort+(motion==='run'?dt/14:-dt/18),0,1);
+        state.effort=Number.isFinite(physiologyEffort)?clamp(physiologyEffort,0,1)
+            :clamp(state.effort+(motion==='run'?dt/14:-dt/18),0,1);
         // Integreret fase bevarer hvert åndedrag, selv når frekvensen ændres.
         const breathingEffort=motion==='pant'?1:(previousEffort+state.effort)/2;
         state.breathPhase=(state.breathPhase+dt*(.4+breathingEffort*1.15))%1;
@@ -149,8 +154,14 @@
             const g=new T.ExtrudeGeometry(shape,{depth:.035,bevelEnabled:true,bevelSegments:3,steps:1,bevelSize:.009,bevelThickness:.009,curveSegments:6});g.translate(0,0,-.0175);return g;
         }
         for(const upper of [true,false])for(const sign of [-1,1]){
-            const length=upper?.20:.12;
-            const fang=mesh(torso,new T.ConeGeometry(.075,length,24),cream,sign*.43);
+            const length=upper?.16:.10;
+            // En afrundet spids og kortere tand giver et venligere udtryk.
+            // Lathe-profilen bevarer tandens taper uden en skarp keglespids.
+            const profile=[new T.Vector2(0,-length/2),new T.Vector2(.061,-length/2),
+                new T.Vector2(.064,-length*.30),new T.Vector2(.046,length*.18),
+                new T.Vector2(.023,length*.42),new T.Vector2(.012,length*.48),
+                new T.Vector2(0,length/2)];
+            const fang=mesh(torso,new T.LatheGeometry(profile,24),cream,sign*.43);
             fang.rotation.z=upper?Math.PI:0;fang.scale.z=.55;
             teeth.push({mesh:fang,upper,length,x:sign*.43,kind:'fang'});
             const incisorX=sign*(upper?.12:.25);
@@ -270,30 +281,34 @@
             purpleDark.color.set(name==='mint'?0x21646b:name==='clay'?0x716577:0x602178);skin.needsUpdate=true;
         }
         setSkin('purple');
-        let lastMouth=-1;
-        function mouthShape(open){
-            if(Math.abs(lastMouth-open)<.001)return;lastMouth=open;
-            const rx=.67+open*.08,ry=.025+open*.495,cy=-.31;
+        let lastMouth=-1,lastSmile=-1;
+        function mouthShape(open,smile=0){
+            if(Math.abs(lastMouth-open)<.001&&Math.abs(lastSmile-smile)<.001)return;
+            lastMouth=open;lastSmile=smile;
+            const rx=.67+open*.08+.06*smile,ry=(.025+open*.495)*(1-.18*smile),cy=-.31;
+            // Mundvigene løftes, mens midten forbliver lavere: et bredt smil,
+            // ikke en rund, overrasket åbning. Hud, læbe og tænder deler kurven.
+            const lift=x=>.24*smile*(x/rx)**2;
             const pos=faceGeometry.attributes.position;
             for(let r=0;r<=rings;r++)for(let a=0;a<=segments;a++){
-                const angle=a/segments*TAU,u=Math.sin(r/rings*Math.PI/2),x=(rx*(1-u)+1.02*u)*Math.cos(angle),y=(cy+ry*Math.sin(angle))*(1-u)+1.08*Math.sin(angle)*u;
+                const angle=a/segments*TAU,u=Math.sin(r/rings*Math.PI/2),x=(rx*(1-u)+1.02*u)*Math.cos(angle),y=(cy+ry*Math.sin(angle)+lift(rx*Math.cos(angle)))*(1-u)+1.08*Math.sin(angle)*u;
                 const z=r===rings?0:.84*Math.sqrt(Math.max(0,1-(x/1.02)**2-(y/1.08)**2));const k=r*(segments+1)+a;
                 pos.setXYZ(k,x,y,z);faceGeometry.attributes.uv.setXY(k,...surfaceUV(x,y,z));
                 faceGeometry.attributes.normal.setXYZ(k,...surfaceNormal(x,y,z).toArray());
-                const innerX=rx*Math.cos(angle),innerY=cy+ry*Math.sin(angle);
+                const innerX=rx*Math.cos(angle),innerY=cy+ry*Math.sin(angle)+lift(innerX);
                 const rimZ=.84*Math.sqrt(Math.max(0,1-(innerX/1.02)**2-(innerY/1.08)**2))-.015;
                 cavityGeometry.attributes.position.setXYZ(k,innerX*(1-u),cy+(innerY-cy)*(1-u),rimZ+(.18-rimZ)*Math.sin(u*Math.PI/2));
             }
             pos.needsUpdate=true;faceGeometry.attributes.uv.needsUpdate=true;faceGeometry.attributes.normal.needsUpdate=true;
             cavityGeometry.attributes.position.needsUpdate=true;cavityGeometry.computeVertexNormals();
             for(let a=0;a<=segments;a++)for(let j=0;j<=8;j++){
-                const angle=a/segments*TAU,q=j/8*TAU,x=rx*Math.cos(angle),y=cy+ry*Math.sin(angle),z=.84*Math.sqrt(Math.max(0,1-(x/1.02)**2-(y/1.08)**2));
+                const angle=a/segments*TAU,q=j/8*TAU,x=rx*Math.cos(angle),y=cy+ry*Math.sin(angle)+lift(x),z=.84*Math.sqrt(Math.max(0,1-(x/1.02)**2-(y/1.08)**2));
                 lipGeometry.attributes.position.setXYZ(a*9+j,x+.025*Math.cos(angle)*Math.cos(q),y+.025*Math.sin(angle)*Math.cos(q),z+.024*Math.sin(q));
             }
             lipGeometry.attributes.position.needsUpdate=true;lipGeometry.computeVertexNormals();
             tongue.position.y=cy-ry*.48;tongue.rotation.x=Math.atan2(ry*.55,.5);tongue.visible=open>.18;
             for(const tooth of teeth){
-                const direction=tooth.upper?1:-1,edgeY=cy+direction*ry*Math.sqrt(1-(tooth.x/rx)**2);
+                const direction=tooth.upper?1:-1,edgeY=cy+direction*ry*Math.sqrt(1-(tooth.x/rx)**2)+lift(tooth.x);
                 const visibleHeight=clamp(open*3,0,1);tooth.mesh.scale.y=visibleHeight;
                 tooth.mesh.position.y=edgeY-direction*(tooth.length*.5-.02)*visibleHeight;
                 tooth.mesh.position.z=.84*Math.sqrt(1-(tooth.x/1.02)**2-(edgeY/1.08)**2)-.095;
@@ -301,6 +316,13 @@
             }
         }
         function update(phase,options={}){
+            // Udstyret ændrer selve skoene, ikke kun en løs effekt omkring DEX.
+            const boosted=!!options.superShoes;
+            shoeLeather.color.set(boosted?0xffb522:0x08787d);
+            shoePanel.color.set(boosted?0xb95110:0x09525d);
+            midsole.color.set(boosted?0xffe66b:0xcac5ab);
+            midsole.emissive.set(boosted?0xffb900:0x000000);
+            midsole.emissiveIntensity=boosted?.65:0;
             const motion=options.motion||'idle',p=pose(motion,phase),beat=characterBeat(motion,p.t,options);
             const {inspect,curious,effort,breath}=beat;
             const droop=bgDroop(options.bg??6);
@@ -324,7 +346,9 @@
             });
             const automaticMouth=motion==='eat'?p.mouth:p.mouth*(1-Math.max(inspect,curious))+.08*inspect+.18*curious;
             const mouth=options.autoMouth===false?options.mouth:motion==='eat'?p.mouth:automaticMouth*(1-effort)+effort*(.16+.42*breath);
-            mouthShape(clamp(mouth,0,1));group.position.y=p.lift-.18;group.position.x=.09*inspect;
+            const happy=(options.expression||'happy')==='happy';
+            const smile=happy&&motion!=='eat'?(1-clamp(mouth,0,1))*(1-effort)*(1-.7*inspect):0;
+            mouthShape(clamp(mouth,0,1),smile);group.position.y=p.lift-.18;group.position.x=.09*inspect;
             // Tungen hviler bag læben. Kun spisning rækker den lidt frem;
             // åben mund og tung vejrtrækning betyder ikke automatisk tunge ud.
             tongue.position.z=.32+(motion==='eat'?.19*p.reach:0);
@@ -363,7 +387,12 @@
             gazes.forEach(gaze=>{gaze.rotation.x=.48*inspect;gaze.rotation.y=-.22*inspect+clamp((options.lookYaw||0)-torso.rotation.y,-.3,.3)*curious;});
             brows.forEach((brow,i)=>{const sign=i===0?-1:1;brow.position.y=.76+(i===0?.11:-.035)*curious;brow.rotation.z=-sign*.13-sign*.09*inspect;});
             const closure=options.expression==='sleepy'?.69:options.expression==='grumpy'?.43:.04+.13*inspect+.06*curious+.05*effort;
-            const blink=Math.exp(-Math.pow((p.t-.90)/.035,2));
+            // Øjenblink følger sekunder, ikke benenes hurtige løbecyklus.
+            // 0,10 s lukning, 0,08 s lukket og 0,16 s åbning hvert 4. sekund.
+            const blinkTime=((beat.clock%4)+4)%4-3.6;
+            const blink=blinkTime<0||blinkTime>.34?0:
+                blinkTime<.10?smooth(blinkTime/.10):
+                blinkTime<.18?1:1-smooth((blinkTime-.18)/.16);
             // Låget vokser ned langs øjets kugleflade, ikke som en klap over hovedet.
             eyes.forEach(lid=>{
                 const close=closure+(1-closure)*blink,positions=lid.geometry.attributes.position;
@@ -398,5 +427,5 @@
         update(0);
         return {group,update,setSkin,pose,skin,materials,legs,arms,gazes,quills,tail,torso,faceGeometry,backGeometry,backpack,sensor,teeth,tongue,lamp,get skinName(){return skinName;}};
     }
-    const api={pose,create,activityState,advanceActivity,bgDroop};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Dex3D=api;
+    const api={pose,create,activityState,advanceActivity,breathingEffort,bgDroop};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Dex3D=api;
 })(globalThis);
